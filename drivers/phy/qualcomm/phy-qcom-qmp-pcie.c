@@ -5806,6 +5806,9 @@ skip_tbls_init:
 		return ret;
 
 	if (!skip_reset) {
+		if (qmp->num_pipe_clks > && qmp->pipe_clks[0].clk)
+			clk_set_rate(qmp->pipe_clks[0].clk, ~0UL);
+
 		ret = reset_control_deassert(qmp->nocsr_reset);
 		if (ret) {
 			dev_err(qmp->dev, "no-csr reset deassert failed\n");
