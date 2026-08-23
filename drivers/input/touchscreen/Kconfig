@@ -1414,4 +1414,16 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  To compile this driver as a module, choose M here: the
 	  module will be called himax_hx83112b.
 
+config TOUCHSCREEN_SYNAPTICS_S3910
+	tristate "Synaptics S3910 TCM SPI touchscreen driver"
+	depends on SPI_MASTER
+	help
+	  Say Y here to enable support for Synaptics S3910 TouchComm (TCM)
+	  touchscreens over SPI (used in OnePlus 12 and related devices).
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called synaptics_s3910.
+
 endif
