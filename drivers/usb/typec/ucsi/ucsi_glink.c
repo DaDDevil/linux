@@ -6,8 +6,10 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/property.h>
+#include <linux/regulator/consumer.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/usb/typec_mux.h>
 #include <linux/gpio/consumer.h>
@@ -64,6 +66,9 @@ struct pmic_glink_ucsi {
 	struct device *dev;
 
 	struct gpio_desc *port_orientation[PMIC_GLINK_MAX_PORTS];
+	struct regulator *port_vbus[PMIC_GLINK_MAX_PORTS];
+	bool port_vbus_enabled[PMIC_GLINK_MAX_PORTS];
+	struct mutex vbus_lock;
 
 	struct pmic_glink_client *client;
 
@@ -80,6 +85,39 @@ struct pmic_glink_ucsi {
 
 	u8 read_buf[UCSI_BUF_V2_SIZE];
 };
+
+static void pmic_glink_ucsi_set_vbus(struct pmic_glink_ucsi *ucsi,
+				     unsigned int port, bool enable)
+{
+	struct regulator *vbus;
+	int ret;
+
+	if (port >= PMIC_GLINK_MAX_PORTS)
+		return;
+
+	vbus = ucsi->port_vbus[port];
+	if (!vbus)
+		return;
+
+	mutex_lock(&ucsi->vbus_lock);
+	if (enable == ucsi->port_vbus_enabled[port])
+		goto out_unlock;
+
+	if (enable)
+		ret = regulator_enable(vbus);
+	else
+		ret = regulator_disable(vbus);
+	if (ret) {
+		dev_err(ucsi->dev, "failed to %s VBUS for port %u: %d\n",
+			enable ? "enable" : "disable", port, ret);
+		goto out_unlock;
+	}
+
+	ucsi->port_vbus_enabled[port] = enable;
+
+out_unlock:
+	mutex_unlock(&ucsi->vbus_lock);
+}
 
 static int pmic_glink_ucsi_read(struct ucsi *__ucsi, unsigned int offset,
 				void *val, size_t val_len)
@@ -207,12 +245,17 @@ static void pmic_glink_ucsi_update_connector(struct ucsi_connector *con)
 static void pmic_glink_ucsi_connector_status(struct ucsi_connector *con)
 {
 	struct pmic_glink_ucsi *ucsi = ucsi_get_drvdata(con->ucsi);
+	unsigned int port = con->num - 1;
 	int orientation;
 
 	if (!UCSI_CONSTAT(con, CONNECTED)) {
+		pmic_glink_ucsi_set_vbus(ucsi, port, false);
 		typec_set_orientation(con->port, TYPEC_ORIENTATION_NONE);
 		return;
 	}
+
+	pmic_glink_ucsi_set_vbus(ucsi, port,
+				 UCSI_CONSTAT(con, PWR_DIR));
 
 	if (con->num > PMIC_GLINK_MAX_PORTS ||
 	    !ucsi->port_orientation[con->num - 1])
@@ -326,6 +369,9 @@ static void pmic_glink_ucsi_register(struct work_struct *work)
 	} else if (ucsi->ucsi_registered && !pd_running) {
 		ucsi_unregister(ucsi->ucsi);
 		ucsi->ucsi_registered = false;
+
+		for (unsigned int port = 0; port < PMIC_GLINK_MAX_PORTS; port++)
+			pmic_glink_ucsi_set_vbus(ucsi, port, false);
 	}
 }
 
@@ -407,6 +453,7 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 	init_completion(&ucsi->write_ack);
 	spin_lock_init(&ucsi->state_lock);
 	mutex_init(&ucsi->lock);
+	mutex_init(&ucsi->vbus_lock);
 
 	ucsi->ucsi = ucsi_create(dev, &pmic_glink_ucsi_ops);
 	if (IS_ERR(ucsi->ucsi))
@@ -425,6 +472,7 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 
 	device_for_each_child_node_scoped(dev, fwnode) {
 		struct gpio_desc *desc;
+		struct regulator *vbus;
 		u32 port;
 
 		ret = fwnode_property_read_u32(fwnode, "reg", &port);
@@ -436,6 +484,16 @@ static int pmic_glink_ucsi_probe(struct auxiliary_device *adev,
 		if (port >= PMIC_GLINK_MAX_PORTS) {
 			dev_warn(dev, "invalid connector number, ignoring\n");
 			continue;
+		}
+
+		vbus = devm_of_regulator_get_optional(dev, to_of_node(fwnode),
+						      "vbus");
+		if (IS_ERR(vbus)) {
+			if (PTR_ERR(vbus) != -ENODEV)
+				return dev_err_probe(dev, PTR_ERR(vbus),
+						     "unable to acquire VBUS regulator\n");
+		} else {
+			ucsi->port_vbus[port] = vbus;
 		}
 
 		desc = devm_gpiod_get_index_optional(&adev->dev, "orientation", port, GPIOD_IN);
@@ -469,6 +527,9 @@ static void pmic_glink_ucsi_remove(struct auxiliary_device *adev)
 
 	/* Unregister first to stop having read & writes */
 	ucsi_unregister(ucsi->ucsi);
+
+	for (unsigned int port = 0; port < PMIC_GLINK_MAX_PORTS; port++)
+		pmic_glink_ucsi_set_vbus(ucsi, port, false);
 }
 
 static const struct auxiliary_device_id pmic_glink_ucsi_id_table[] = {
