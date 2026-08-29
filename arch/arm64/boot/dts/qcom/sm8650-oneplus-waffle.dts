@@ -31,6 +31,35 @@
 		regulator-boot-on;
 	};
 
+	otg_ovp: regulator-otg-ovp {
+		compatible = "regulator-fixed";
+
+		regulator-name = "otg_ovp";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+
+		gpio = <&pm8550b_gpios 7 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&otg_ovp_en_default>;
+		pinctrl-names = "default";
+	};
+
+	otg_vbus: regulator-otg-vbus {
+		compatible = "regulator-fixed";
+
+		regulator-name = "otg_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+
+		vin-supply = <&otg_ovp>;
+		gpio = <&pm8550vs_e_gpios 4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&otg_booster_en_default>;
+		pinctrl-names = "default";
+	};
+
     chosen {
         stdout-path = "serial0:115200n8";
         bootargs = "console=tty0 root=PARTUUID=5d3dddc7-00ab-dc78-d77c-4877d9cfa5da rw";
@@ -53,7 +82,8 @@
 	};
 
     pmic-glink {
-        compatible = "qcom,sm8650-pmic-glink",
+		compatible = "oneplus,waffle-pmic-glink",
+			"qcom,sm8650-pmic-glink",
 		"qcom,sm8550-pmic-glink",
 			"qcom,pmic-glink";
         #address-cells = <1>;
@@ -66,6 +96,7 @@
 
 		power-role = "dual";
 		data-role = "dual";
+		vbus-supply = <&otg_vbus>;
 
 		ports {
 			#address-cells = <1>;
@@ -84,14 +115,6 @@
 
 				pmic_glink_ss_in: endpoint {
 					remote-endpoint = <&redriver_ss_out>;
-				};
-			};
-
-			port@2 {
-				reg = <2>;
-
-				pmic_glink_sbu: endpoint {
-					remote-endpoint = <&wcd_usbss_sbu_mux>;
 				};
 			};
 
@@ -235,6 +258,50 @@
 	vdda-pll-supply = <&vreg_l3g_0p91>;
 
 	status = "okay";
+};
+
+&usb_1_dwc3_hs {
+	remote-endpoint = <&pmic_glink_hs_in>;
+};
+
+&usb_dp_qmpphy_out {
+	remote-endpoint = <&redriver_ss_in>;
+};
+
+&i2c6 {
+	status = "okay";
+
+	typec-mux@1c {
+		compatible = "onnn,nb7vpq904m";
+		reg = <0x1c>;
+
+		vcc-supply = <&vreg_l15b_1p8>;
+
+		retimer-switch;
+		orientation-switch;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				redriver_ss_out: endpoint {
+					remote-endpoint = <&pmic_glink_ss_in>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				redriver_ss_in: endpoint {
+					data-lanes = <3 2 1 0>;
+					remote-endpoint = <&usb_dp_qmpphy_out>;
+				};
+			};
+		};
+	};
 };
 
 &ufs_mem_hc {
@@ -458,6 +525,28 @@
 		bias-pull-up;
 		power-source = <1>;
     };
+};
+
+&pm8550b_gpios {
+	otg_ovp_en_default: otg-ovp-en-state {
+		pins = "gpio7";
+		function = "normal";
+		power-source = <0>;
+		bias-disable;
+		output-low;
+		qcom,drive-strength = <3>;
+	};
+};
+
+&pm8550vs_e_gpios {
+	otg_booster_en_default: otg-booster-en-state {
+		pins = "gpio4";
+		function = "normal";
+		power-source = <0>;
+		bias-disable;
+		output-low;
+		qcom,drive-strength = <3>;
+	};
 };
 
 &pm8550b_eusb2_repeater {
