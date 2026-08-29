@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
@@ -35,6 +36,13 @@ enum qcom_battmgr_variant {
 #define NOTIF_BAT_PROPERTY		0x30
 #define NOTIF_USB_PROPERTY		0x32
 #define NOTIF_WLS_PROPERTY		0x34
+#define NOTIF_CID_DETECT		0x53
+#define NOTIF_TYPEC_STATE_CHANGE	0x55
+#define NOTIF_PLUGIN_IRQ		0x57
+#define NOTIF_APSD_DONE			0x58
+#define NOTIF_CP_MOS_DISABLE		0x64
+#define NOTIF_POWER_ROLE_STATUS		0x7d
+#define NOTIF_PD_CONNECT_HARD_RESET	0x7f
 #define NOTIF_BAT_STATUS		0x80
 #define NOTIF_BAT_INFO			0x81
 #define NOTIF_BAT_CHARGING_STATE	0x83
@@ -331,6 +339,7 @@ struct qcom_battmgr {
 	struct qcom_battmgr_ac ac;
 	struct qcom_battmgr_usb usb;
 	struct qcom_battmgr_wireless wireless;
+	bool status_follows_power_online;
 
 	struct work_struct enable_work;
 
@@ -470,6 +479,37 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	return ret;
 }
 
+/*
+ * The Waffle firmware leaves BATT_STATUS set to Charging after external
+ * power is removed.  Its USB and wireless ONLINE properties do update.
+ */
+static int qcom_battmgr_bat_waffle_update_status(struct qcom_battmgr *battmgr)
+{
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+					    BATT_STATUS, 0);
+	if (ret)
+		goto out_unlock;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_ONLINE, 0);
+	if (ret)
+		goto out_unlock;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_WLS_PROPERTY_GET,
+					    WLS_ONLINE, 0);
+	if (!ret && !battmgr->usb.online && !battmgr->wireless.online &&
+	    battmgr->status.status != POWER_SUPPLY_STATUS_FULL)
+		battmgr->status.status = POWER_SUPPLY_STATUS_DISCHARGING;
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret;
+}
+
 static int qcom_battmgr_bat_sc8280xp_update(struct qcom_battmgr *battmgr,
 					    enum power_supply_property psp)
 {
@@ -520,7 +560,10 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 	if (!battmgr->service_up)
 		return -EAGAIN;
 
-	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
+	if (battmgr->status_follows_power_online &&
+	    psp == POWER_SUPPLY_PROP_STATUS)
+		ret = qcom_battmgr_bat_waffle_update_status(battmgr);
+	else if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
 		ret = qcom_battmgr_bat_sc8280xp_update(battmgr, psp);
 	else
@@ -1214,6 +1257,16 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	case NOTIF_USB_PROPERTY:
 		power_supply_changed(battmgr->usb_psy);
 		break;
+	case NOTIF_TYPEC_STATE_CHANGE:
+	case NOTIF_CID_DETECT:
+	case NOTIF_PLUGIN_IRQ:
+	case NOTIF_APSD_DONE:
+	case NOTIF_CP_MOS_DISABLE:
+	case NOTIF_POWER_ROLE_STATUS:
+	case NOTIF_PD_CONNECT_HARD_RESET:
+		power_supply_changed(battmgr->bat_psy);
+		power_supply_changed(battmgr->usb_psy);
+		break;
 	case NOTIF_WLS_PROPERTY:
 		power_supply_changed(battmgr->wls_psy);
 		break;
@@ -1640,6 +1693,8 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		return -ENOMEM;
 
 	battmgr->dev = dev;
+	battmgr->status_follows_power_online =
+		of_device_is_compatible(dev->of_node, "oneplus,waffle-pmic-glink");
 
 	psy_cfg.drv_data = battmgr;
 	psy_cfg.fwnode = dev_fwnode(&adev->dev);
