@@ -36,6 +36,8 @@ enum qcom_battmgr_variant {
 #define NOTIF_BAT_PROPERTY		0x30
 #define NOTIF_USB_PROPERTY		0x32
 #define NOTIF_WLS_PROPERTY		0x34
+#define NOTIF_OPLUS_OTG_ENABLE		0x50
+#define NOTIF_OPLUS_OTG_DISABLE		0x51
 #define NOTIF_CID_DETECT		0x53
 #define NOTIF_TYPEC_STATE_CHANGE	0x55
 #define NOTIF_PLUGIN_IRQ		0x57
@@ -95,6 +97,11 @@ enum qcom_battmgr_variant {
 #define USB_ADAP_TYPE			7
 #define USB_MOISTURE_DET_EN		8
 #define USB_MOISTURE_DET_STS		9
+
+/* OnePlus SM8650 uses the regular USB property namespace (not SOCCP). */
+#define OPLUS_USB_OTG_AP_ENABLE		17
+#define OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE	24
+#define OPLUS_USB_OTG_BOOST_CURRENT	64
 
 #define BATTMGR_WLS_PROPERTY_GET	0x34
 #define BATTMGR_WLS_PROPERTY_SET	0x35
@@ -316,6 +323,10 @@ struct qcom_battmgr_wireless {
 	unsigned int current_max;
 };
 
+struct qcom_battmgr_oplus {
+	bool otg_state;
+};
+
 struct qcom_battmgr {
 	struct device *dev;
 	struct pmic_glink_client *client;
@@ -339,9 +350,12 @@ struct qcom_battmgr {
 	struct qcom_battmgr_ac ac;
 	struct qcom_battmgr_usb usb;
 	struct qcom_battmgr_wireless wireless;
+	struct qcom_battmgr_oplus oplus;
 	bool status_follows_power_online;
+	bool oplus_otg_control;
 
 	struct work_struct enable_work;
+	struct work_struct oplus_otg_work;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -501,9 +515,15 @@ static int qcom_battmgr_bat_waffle_update_status(struct qcom_battmgr *battmgr)
 
 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_WLS_PROPERTY_GET,
 					    WLS_ONLINE, 0);
-	if (!ret && !battmgr->usb.online && !battmgr->wireless.online &&
-	    battmgr->status.status != POWER_SUPPLY_STATUS_FULL)
-		battmgr->status.status = POWER_SUPPLY_STATUS_DISCHARGING;
+	if (!ret && battmgr->status.status != POWER_SUPPLY_STATUS_FULL) {
+		if (battmgr->oplus_otg_control &&
+		    READ_ONCE(battmgr->oplus.otg_state))
+			battmgr->status.status = POWER_SUPPLY_STATUS_DISCHARGING;
+		else if (battmgr->usb.online || battmgr->wireless.online)
+			battmgr->status.status = POWER_SUPPLY_STATUS_CHARGING;
+		else
+			battmgr->status.status = POWER_SUPPLY_STATUS_DISCHARGING;
+	}
 
 out_unlock:
 	mutex_unlock(&battmgr->lock);
@@ -1245,6 +1265,19 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 
 	notification = le32_to_cpu(msg->notification);
 	notification &= 0xff;
+	if (battmgr->oplus_otg_control) {
+		switch (notification) {
+		case NOTIF_OPLUS_OTG_ENABLE:
+			WRITE_ONCE(battmgr->oplus.otg_state, true);
+			schedule_work(&battmgr->oplus_otg_work);
+			break;
+		case NOTIF_OPLUS_OTG_DISABLE:
+			WRITE_ONCE(battmgr->oplus.otg_state, false);
+			schedule_work(&battmgr->oplus_otg_work);
+			break;
+		}
+	}
+
 	switch (notification) {
 	case NOTIF_BAT_INFO:
 		battmgr->info.valid = false;
@@ -1264,6 +1297,8 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	case NOTIF_CP_MOS_DISABLE:
 	case NOTIF_POWER_ROLE_STATUS:
 	case NOTIF_PD_CONNECT_HARD_RESET:
+	case NOTIF_OPLUS_OTG_ENABLE:
+	case NOTIF_OPLUS_OTG_DISABLE:
 		power_supply_changed(battmgr->bat_psy);
 		power_supply_changed(battmgr->usb_psy);
 		break;
@@ -1574,6 +1609,17 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			break;
 		}
 		break;
+	case BATTMGR_USB_PROPERTY_SET:
+		if (payload_len != sizeof(resp->intval)) {
+			dev_warn(battmgr->dev,
+				 "invalid payload length for USB property set: %zd\n",
+				 payload_len);
+			battmgr->error = -ENODATA;
+			return;
+		}
+
+		battmgr->error = le32_to_cpu(resp->intval.result);
+		break;
 	case BATTMGR_WLS_PROPERTY_GET:
 		property = le32_to_cpu(resp->intval.property);
 		if (payload_len != sizeof(resp->intval)) {
@@ -1650,6 +1696,50 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
 	if (ret)
 		dev_err(battmgr->dev, "failed to request power notifications\n");
+
+	if (battmgr->oplus_otg_control) {
+		mutex_lock(&battmgr->lock);
+		ret = qcom_battmgr_request_property(battmgr,
+						    BATTMGR_USB_PROPERTY_SET,
+						    OPLUS_USB_OTG_AP_ENABLE, 1);
+		mutex_unlock(&battmgr->lock);
+		if (ret)
+			dev_err(battmgr->dev, "failed to enable OnePlus AP OTG control: %d\n", ret);
+	}
+}
+
+static void qcom_battmgr_oplus_otg_worker(struct work_struct *work)
+{
+	struct qcom_battmgr *battmgr =
+		container_of(work, struct qcom_battmgr, oplus_otg_work);
+	bool enable = READ_ONCE(battmgr->oplus.otg_state);
+	int ret = 0;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return;
+
+	mutex_lock(&battmgr->lock);
+	if (enable) {
+		ret = qcom_battmgr_request_property(battmgr,
+						    BATTMGR_USB_PROPERTY_SET,
+						    OPLUS_USB_OTG_BOOST_CURRENT, 2000);
+		if (ret)
+			goto out_unlock;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr,
+						    BATTMGR_USB_PROPERTY_SET,
+						    OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE,
+						    enable);
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+
+	if (ret)
+		dev_err(battmgr->dev, "failed to %s OnePlus OTG VBUS: %d\n",
+			enable ? "enable" : "disable", ret);
+	power_supply_changed(battmgr->bat_psy);
+	power_supply_changed(battmgr->usb_psy);
 }
 
 static void qcom_battmgr_pdr_notify(void *priv, int state)
@@ -1661,6 +1751,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 		schedule_work(&battmgr->enable_work);
 	} else {
 		battmgr->service_up = false;
+		WRITE_ONCE(battmgr->oplus.otg_state, false);
 	}
 }
 
@@ -1695,6 +1786,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	battmgr->dev = dev;
 	battmgr->status_follows_power_online =
 		of_device_is_compatible(dev->of_node, "oneplus,waffle-pmic-glink");
+	battmgr->oplus_otg_control = battmgr->status_follows_power_online;
 
 	psy_cfg.drv_data = battmgr;
 	psy_cfg.fwnode = dev_fwnode(&adev->dev);
@@ -1768,6 +1860,11 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 
 	ret = devm_work_autocancel(dev, &battmgr->enable_work,
 				   qcom_battmgr_enable_worker);
+	if (ret)
+		return ret;
+
+	ret = devm_work_autocancel(dev, &battmgr->oplus_otg_work,
+				   qcom_battmgr_oplus_otg_worker);
 	if (ret)
 		return ret;
 
