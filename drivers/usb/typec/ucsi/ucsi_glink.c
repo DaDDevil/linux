@@ -246,16 +246,17 @@ static void pmic_glink_ucsi_connector_status(struct ucsi_connector *con)
 {
 	struct pmic_glink_ucsi *ucsi = ucsi_get_drvdata(con->ucsi);
 	unsigned int port = con->num - 1;
+	bool connected = UCSI_CONSTAT(con, CONNECTED);
+	bool power_dir = UCSI_CONSTAT(con, PWR_DIR);
 	int orientation;
 
-	if (!UCSI_CONSTAT(con, CONNECTED)) {
+	if (!connected) {
 		pmic_glink_ucsi_set_vbus(ucsi, port, false);
 		typec_set_orientation(con->port, TYPEC_ORIENTATION_NONE);
 		return;
 	}
 
-	pmic_glink_ucsi_set_vbus(ucsi, port,
-				 UCSI_CONSTAT(con, PWR_DIR));
+	pmic_glink_ucsi_set_vbus(ucsi, port, power_dir);
 
 	if (con->num > PMIC_GLINK_MAX_PORTS ||
 	    !ucsi->port_orientation[con->num - 1])
@@ -362,7 +363,6 @@ static void pmic_glink_ucsi_register(struct work_struct *work)
 	spin_lock_irqsave(&ucsi->state_lock, flags);
 	pd_running = ucsi->pd_running;
 	spin_unlock_irqrestore(&ucsi->state_lock, flags);
-
 	if (!ucsi->ucsi_registered && pd_running) {
 		ucsi_register(ucsi->ucsi);
 		ucsi->ucsi_registered = true;
