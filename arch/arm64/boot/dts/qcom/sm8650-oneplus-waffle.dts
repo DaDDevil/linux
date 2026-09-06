@@ -62,7 +62,7 @@
 
     chosen {
         stdout-path = "serial0:115200n8";
-        bootargs = "console=tty0 root=PARTUUID=5d3dddc7-00ab-dc78-d77c-4877d9cfa5da rw";
+        bootargs = "console=tty0 root=PARTUUID=4760be34-a36a-4316-8cbd-f65bd4a7cf85 rw";
     };
     
     gpio-keys {
