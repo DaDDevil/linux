@@ -231,20 +231,27 @@ static int __ath12k_core_create_board_name(struct ath12k_base *ab, char *name,
 
 	switch (ab->id.bdf_search) {
 	case ATH12K_BDF_SEARCH_BUS_AND_BOARD:
-		if (bus_type_mode)
+		if (bus_type_mode) {
 			scnprintf(name, name_len,
 				  "bus=%s",
 				  ath12k_bus_str(ab->hif.bus));
-		else
+		} else {
+			u32 subsys_dev = ab->id.subsystem_device;
+
+			/* Map generic WCN7850 0x1107 to Qualcomm reference board 0x3378 on fallback */
+			if (with_default && subsys_dev == 0x1107)
+				subsys_dev = 0x3378;
+
 			scnprintf(name, name_len,
 				  "bus=%s,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x,qmi-chip-id=%d,qmi-board-id=%d%s",
 				  ath12k_bus_str(ab->hif.bus),
 				  ab->id.vendor, ab->id.device,
 				  ab->id.subsystem_vendor,
-				  ab->id.subsystem_device,
+				  subsys_dev,
 				  ab->qmi.target.chip_id,
 				  ab->qmi.target.board_id,
 				  variant);
+		}
 		break;
 	default:
 		scnprintf(name, name_len,
