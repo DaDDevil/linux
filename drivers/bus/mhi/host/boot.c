@@ -215,6 +215,8 @@ static int mhi_fw_load_bhie(struct mhi_controller *mhi_cntrl,
 	rwlock_t *pm_lock = &mhi_cntrl->pm_lock;
 	u32 tx_status, sequence_id;
 	int ret;
+	unsigned long expire;
+	ktime_t start_t;
 
 	read_lock_bh(pm_lock);
 	if (!MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state)) {
@@ -240,19 +242,44 @@ static int mhi_fw_load_bhie(struct mhi_controller *mhi_cntrl,
 	if (ret)
 		return ret;
 
-	/* Wait for the image download to complete */
-	ret = wait_event_timeout(mhi_cntrl->state_event,
-				 MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
-				 mhi_read_reg_field(mhi_cntrl, base,
-						   BHIE_TXVECSTATUS_OFFS,
-						   BHIE_TXVECSTATUS_STATUS_BMSK,
-						   &tx_status) || tx_status,
-				 msecs_to_jiffies(mhi_cntrl->timeout_ms));
-	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
-	    tx_status != BHIE_TXVECSTATUS_STATUS_XFER_COMPL)
-		return -EIO;
+	/* Wait for the image download to complete (active polling to avoid missing interrupt) */
+	start_t = ktime_get();
+	expire = jiffies + msecs_to_jiffies(mhi_cntrl->timeout_ms);
+	tx_status = 0;
+	while (time_before(jiffies, expire)) {
+		if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+			break;
 
-	return (!ret) ? -ETIMEDOUT : 0;
+		ret = mhi_read_reg_field(mhi_cntrl, base,
+					 BHIE_TXVECSTATUS_OFFS,
+					 BHIE_TXVECSTATUS_STATUS_BMSK,
+					 &tx_status);
+		if (ret)
+			break;
+
+		if (tx_status)
+			break;
+
+		fsleep(1000);
+	}
+
+	dev_info(dev, "BHIe image download took %lld us, tx_status: 0x%x\n",
+		 ktime_to_us(ktime_sub(ktime_get(), start_t)), tx_status);
+
+	if (!tx_status) {
+		dev_err(dev, "BHIe transfer timed out, pm_state: 0x%x, tx_status: 0x%x\n",
+			mhi_cntrl->pm_state, tx_status);
+		return -ETIMEDOUT;
+	}
+
+	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
+	    tx_status != BHIE_TXVECSTATUS_STATUS_XFER_COMPL) {
+		dev_err(dev, "BHIe transfer failed, pm_state: 0x%x, tx_status: 0x%x\n",
+			mhi_cntrl->pm_state, tx_status);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static int mhi_fw_load_bhi(struct mhi_controller *mhi_cntrl,
@@ -263,6 +290,8 @@ static int mhi_fw_load_bhi(struct mhi_controller *mhi_cntrl,
 	void __iomem *base = mhi_cntrl->bhi;
 	u32 tx_status, session_id;
 	int ret;
+	unsigned long expire;
+	ktime_t start_t;
 
 	read_lock_bh(pm_lock);
 	if (!MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state)) {
@@ -280,22 +309,49 @@ static int mhi_fw_load_bhi(struct mhi_controller *mhi_cntrl,
 	mhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);
 	read_unlock_bh(pm_lock);
 
-	/* Wait for the image download to complete */
-	ret = wait_event_timeout(mhi_cntrl->state_event,
-			   MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
-			   mhi_read_reg_field(mhi_cntrl, base, BHI_STATUS,
-					      BHI_STATUS_MASK, &tx_status) || tx_status,
-			   msecs_to_jiffies(mhi_cntrl->timeout_ms));
-	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
-		goto invalid_pm_state;
+	/* Wait for the image download to complete (active polling to avoid missing interrupt) */
+	start_t = ktime_get();
+	expire = jiffies + msecs_to_jiffies(mhi_cntrl->timeout_ms);
+	tx_status = 0;
+	while (time_before(jiffies, expire)) {
+		if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+			break;
 
-	if (tx_status == BHI_STATUS_ERROR) {
-		dev_err(dev, "Image transfer failed\n");
+		ret = mhi_read_reg_field(mhi_cntrl, base, BHI_STATUS,
+					 BHI_STATUS_MASK, &tx_status);
+		if (ret)
+			break;
+
+		if (tx_status)
+			break;
+
+		fsleep(1000);
+	}
+
+	dev_info(dev, "BHI image download took %lld us, tx_status: 0x%x\n",
+		 ktime_to_us(ktime_sub(ktime_get(), start_t)), tx_status);
+
+	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state)) {
+		dev_err(dev, "MHI in error state: 0x%x, tx_status: 0x%x\n",
+			mhi_cntrl->pm_state, tx_status);
 		mhi_fw_load_error_dump(mhi_cntrl);
 		goto invalid_pm_state;
 	}
 
-	return (!ret) ? -ETIMEDOUT : 0;
+	if (tx_status == BHI_STATUS_ERROR) {
+		dev_err(dev, "Image transfer failed, tx_status: 0x%x\n", tx_status);
+		mhi_fw_load_error_dump(mhi_cntrl);
+		goto invalid_pm_state;
+	}
+
+	if (!tx_status) {
+		dev_err(dev, "Image transfer timed out, tx_status: 0x%x, pm_state: 0x%x\n",
+			tx_status, mhi_cntrl->pm_state);
+		mhi_fw_load_error_dump(mhi_cntrl);
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 
 invalid_pm_state:
 
@@ -537,6 +593,8 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
 	fw_sz = firmware->size;
 
 skip_req_fw:
+	dev_info(dev, "Loading fw: %s (size %zu, bhi_size %zu, fbc %d)\n",
+		 fw_name ? fw_name : "builtin", fw_sz, size, mhi_cntrl->fbc_download);
 	fw_load_type = mhi_fw_load_type_get(mhi_cntrl);
 	if (fw_load_type == MHI_FW_LOAD_BHIE)
 		ret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);
