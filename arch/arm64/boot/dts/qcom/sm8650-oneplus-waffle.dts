@@ -31,6 +31,16 @@
 		regulator-boot-on;
 	};
 
+	vreg_ts_avdd: ts-avdd-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_ts_avdd";
+		regulator-min-microvolt = <3006000>;
+		regulator-max-microvolt = <3006000>;
+		gpio = <&tlmm 108 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&vph_pwr>;
+	};
+
 	otg_ovp: regulator-otg-ovp {
 		compatible = "regulator-fixed";
 
@@ -374,10 +384,13 @@
 };
 
 &spi4 {
+	pinctrl-0 = <&qup_spi4_data_clk>, <&qup_spi4_cs>;
+	pinctrl-names = "default";
+
 	status = "okay";
 
 	touchscreen@0 {
-		compatible = "synaptics,s3910", "synaptics,tcm-spi-hbp";
+		compatible = "syna,s3910", "synaptics,s3910";
 		reg = <0>;
 		spi-max-frequency = <19000000>;
 
@@ -385,13 +398,10 @@
 		interrupts = <162 IRQ_TYPE_LEVEL_LOW>;
 
 		reset-gpios = <&tlmm 161 GPIO_ACTIVE_LOW>;
-		avdd-gpios = <&tlmm 108 GPIO_ACTIVE_HIGH>;
 		vdd-supply = <&vreg_l4b_1p8>;
+		avdd-supply = <&vreg_ts_avdd>;
 
-		touchscreen-size-x = <1440>;
-		touchscreen-size-y = <3168>;
-
-		pinctrl-0 = <&ts_int_default>, <&ts_reset_default>, <&ts_avdd_default>;
+		pinctrl-0 = <&ts_int_default>, <&ts_reset_default>;
 		pinctrl-names = "default";
 	};
 };
@@ -487,25 +497,17 @@
 	ts_int_default: ts-int-default-state {
 		pins = "gpio162";
 		function = "gpio";
-		drive-strength = <8>;
-		bias-disable;
+		drive-strength = <2>;
+		bias-pull-up;
 		input-enable;
 	};
 
 	ts_reset_default: ts-reset-default-state {
 		pins = "gpio161";
 		function = "gpio";
-		drive-strength = <8>;
-		bias-disable;
-		output-low;
-	};
-
-	ts_avdd_default: ts-avdd-default-state {
-		pins = "gpio108";
-		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
-		output-low;
+		output-high;
 	};
 };
 
