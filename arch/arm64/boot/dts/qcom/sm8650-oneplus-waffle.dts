@@ -21,6 +21,23 @@
 	    serial0 = &uart15;
 	    serial1 = &uart14;
     };
+
+	memory@a0000000 {
+		device_type = "memory";
+		reg = <0x00 0x816e0000 0x00 0x00320000>,
+		      <0x00 0x81cf5000 0x00 0x0000b000>,
+		      <0x00 0x81f20000 0x00 0x00580000>,
+		      <0x00 0x82800000 0x00 0x02000000>,
+		      <0x00 0x84a00000 0x00 0x02100000>,
+		      <0x00 0xa3180000 0x00 0x31ca3000>,
+		      <0x00 0xd5100000 0x00 0x02f00000>,
+		      <0x00 0xe1bb0000 0x00 0x1dc50000>,
+		      <0x00 0xffe00000 0x00 0x00200000>,
+		      <0x08 0x80000000 0x00 0x2f700000>,
+		      <0x08 0xb0000000 0x00 0x05f00000>,
+		      <0x08 0xc0000000 0x01 0x40000000>,
+		      <0x0a 0x00000000 0x02 0x00000000>;
+	};
     
     vph_pwr: vph-pwr-regulator {
 		compatible = "regulator-fixed";
@@ -150,6 +167,19 @@
 		vddrfa1p8-supply = <&vreg_s6c_1p8>;
 
 		clocks = <&rpmhcc RPMH_RF_CLK1>;
+
+		qcom,qmp = <&aoss_qmp>;
+		qcom,pdc-init-table =
+			"{class: wlan_pdc, ss: rf, res: s3c.v, upval: 916}",
+			"{class: wlan_pdc, ss: rf, res: s3c.v, dwnval: 612}",
+			"{class: wlan_pdc, ss: rf, res: s1c.v, upval: 1316}",
+			"{class: wlan_pdc, ss: rf, res: s1c.v, dwnval: 944}",
+			"{class: wlan_pdc, ss: rf, res: s6c.v, upval: 1864}",
+			"{class: wlan_pdc, ss: rf, res: s6c.v, dwnval: 1820}",
+			"{class: wlan_pdc, ss: bb, res: s2c.v, upval: 976}",
+			"{class: wlan_pdc, ss: bb, res: s2c.v, dwnval: 512}",
+			"{class: wlan_pdc, ss: bb, res: s4i.v, upval: 940}",
+			"{class: wlan_pdc, ss: bb, res: s4i.v, dwnval: 420}";
 
 		regulators {
 			vreg_pmu_rfa_cmn: ldo0 {
