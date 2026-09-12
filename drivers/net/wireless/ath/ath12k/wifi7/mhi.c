@@ -112,7 +112,7 @@ static struct mhi_event_config ath12k_wifi7_mhi_events_wcn7850[] = {
 	},
 	{
 		.num_elements = 256,
-		.irq_moderation_ms = 1,
+		.irq_moderation_ms = 0,
 		.irq = 2,
 		.mode = MHI_DB_BRST_DISABLE,
 		.priority = 1,
@@ -131,4 +131,5 @@ const struct mhi_controller_config ath12k_wifi7_mhi_config_wcn7850 = {
 	.ch_cfg = ath12k_wifi7_mhi_channels_wcn7850,
 	.num_events = ARRAY_SIZE(ath12k_wifi7_mhi_events_wcn7850),
 	.event_cfg = ath12k_wifi7_mhi_events_wcn7850,
+	.m2_no_db = true,
 };

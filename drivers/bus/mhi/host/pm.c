@@ -1295,8 +1295,13 @@ EXPORT_SYMBOL_GPL(mhi_power_down_keep_dev);
 
 int mhi_sync_power_up(struct mhi_controller *mhi_cntrl)
 {
+	struct device *dev = &mhi_cntrl->mhi_dev->dev;
 	int ret = mhi_async_power_up(mhi_cntrl);
 	u32 timeout_ms;
+	unsigned long expire;
+	int loop = 0;
+	bool sbl_queued = false;
+	bool amss_queued = false;
 
 	if (ret)
 		return ret;
@@ -1304,10 +1309,62 @@ int mhi_sync_power_up(struct mhi_controller *mhi_cntrl)
 	/* Some devices need more time to set ready during power up */
 	timeout_ms = mhi_cntrl->ready_timeout_ms ?
 		mhi_cntrl->ready_timeout_ms : mhi_cntrl->timeout_ms;
-	wait_event_timeout(mhi_cntrl->state_event,
-			   MHI_IN_MISSION_MODE(mhi_cntrl->ee) ||
-			   MHI_PM_FATAL_ERROR(mhi_cntrl->pm_state),
-			   msecs_to_jiffies(timeout_ms));
+	expire = jiffies + msecs_to_jiffies(timeout_ms);
+
+	while (time_before(jiffies, expire)) {
+		enum mhi_ee_type ee = MHI_EE_MAX;
+		enum mhi_state state = MHI_STATE_RESET;
+		u32 bhi_status = 0, bhi_errcode = 0, bhi_dbg1 = 0, bhi_dbg2 = 0, bhi_dbg3 = 0;
+
+		if (MHI_IN_MISSION_MODE(mhi_cntrl->ee) ||
+		    MHI_PM_FATAL_ERROR(mhi_cntrl->pm_state))
+			break;
+
+		if (mhi_cntrl->bhi && MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state)) {
+			ee = mhi_get_exec_env(mhi_cntrl);
+			state = mhi_get_mhi_state(mhi_cntrl);
+			ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_STATUS, &bhi_status);
+			ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_ERRCODE, &bhi_errcode);
+			ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_ERRDBG1, &bhi_dbg1);
+			ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_ERRDBG2, &bhi_dbg2);
+			ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_ERRDBG3, &bhi_dbg3);
+		}
+
+		if ((loop++ % 10) == 0 || ee != MHI_EE_PBL) {
+			dev_info(dev, "SYNC_WAIT [%d]: hw_ee=%s host_ee=%s state=%s pm_state=0x%x BHI(st=0x%x err=0x%x dbg1=0x%x dbg2=0x%x dbg3=0x%x)\n",
+				 loop, TO_MHI_EXEC_STR(ee), TO_MHI_EXEC_STR(mhi_cntrl->ee),
+				 mhi_state_str(state), mhi_cntrl->pm_state,
+				 bhi_status, bhi_errcode, bhi_dbg1, bhi_dbg2, bhi_dbg3);
+		}
+
+		/* Poll control event ring in case MSI was not delivered */
+		if (mhi_cntrl->mhi_ctxt && mhi_cntrl->mhi_event &&
+		    MHI_REG_ACCESS_VALID(mhi_cntrl->pm_state)) {
+			spin_lock_bh(&mhi_cntrl->mhi_event[0].lock);
+			mhi_process_ctrl_ev_ring(mhi_cntrl, &mhi_cntrl->mhi_event[0], U32_MAX);
+			spin_unlock_bh(&mhi_cntrl->mhi_event[0].lock);
+		}
+
+		/* Check if HW entered SBL but host hasn't transitioned */
+		if (ee == MHI_EE_SBL && mhi_cntrl->ee != MHI_EE_SBL && !sbl_queued) {
+			sbl_queued = true;
+			dev_info(dev, "SYNC_WAIT: HW entered SBL! Triggering DEV_ST_TRANSITION_SBL...\n");
+			mhi_queue_state_transition(mhi_cntrl, DEV_ST_TRANSITION_SBL);
+		}
+
+		/* Check if HW entered Mission Mode (AMSS/WFW) but host hasn't transitioned */
+		if (MHI_IN_MISSION_MODE(ee) && !MHI_IN_MISSION_MODE(mhi_cntrl->ee) && !amss_queued) {
+			amss_queued = true;
+			dev_info(dev, "SYNC_WAIT: HW entered Mission Mode (%s)! Triggering DEV_ST_TRANSITION_MISSION_MODE...\n",
+				 TO_MHI_EXEC_STR(ee));
+			mhi_queue_state_transition(mhi_cntrl, DEV_ST_TRANSITION_MISSION_MODE);
+		}
+
+		wait_event_timeout(mhi_cntrl->state_event,
+				   MHI_IN_MISSION_MODE(mhi_cntrl->ee) ||
+				   MHI_PM_FATAL_ERROR(mhi_cntrl->pm_state),
+				   msecs_to_jiffies(100));
+	}
 
 	ret = (MHI_IN_MISSION_MODE(mhi_cntrl->ee)) ? 0 : -ETIMEDOUT;
 	if (ret)
