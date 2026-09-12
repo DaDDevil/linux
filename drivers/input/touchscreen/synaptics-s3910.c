@@ -550,6 +550,7 @@ static int tcm_probe(struct spi_device *spi)
 
 static const struct of_device_id tcm_of_match[] = {
 	{ .compatible = "syna,s3910" },
+	{ .compatible = "synaptics,s3910" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, tcm_of_match);
