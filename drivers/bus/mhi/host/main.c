@@ -1368,14 +1368,27 @@ static int mhi_update_channel_state(struct mhi_controller *mhi_cntrl,
 		goto exit_channel_update;
 	}
 
-	ret = wait_for_completion_timeout(&mhi_chan->completion,
-				       msecs_to_jiffies(mhi_cntrl->timeout_ms));
-	if (!ret || mhi_chan->ccs != MHI_EV_CC_SUCCESS) {
-		dev_err(dev,
-			"%d: Failed to receive %s channel command completion\n",
-			mhi_chan->chan, TO_CH_STATE_TYPE_STR(to_state));
-		ret = -EIO;
-		goto exit_channel_update;
+	{
+		bool completed = false;
+		unsigned long timeout = jiffies + msecs_to_jiffies(mhi_cntrl->timeout_ms);
+		while (!(completed = try_wait_for_completion(&mhi_chan->completion))) {
+			struct mhi_event *mhi_event = &mhi_cntrl->mhi_event[0];
+			if (mhi_event)
+				mhi_process_ctrl_ev_ring(mhi_cntrl, mhi_event, 32);
+			if ((completed = try_wait_for_completion(&mhi_chan->completion)))
+				break;
+			if (time_after(jiffies, timeout))
+				break;
+			msleep(20);
+		}
+
+		if (!completed || mhi_chan->ccs != MHI_EV_CC_SUCCESS) {
+			dev_err(dev,
+				"%d: Failed to receive %s channel command completion (ccs=%d)\n",
+				mhi_chan->chan, TO_CH_STATE_TYPE_STR(to_state), mhi_chan->ccs);
+			ret = -EIO;
+			goto exit_channel_update;
+		}
 	}
 
 	ret = 0;
