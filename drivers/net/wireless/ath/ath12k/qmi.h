@@ -142,6 +142,7 @@ struct ath12k_qmi {
 	u32 target_mem_mode;
 	bool target_mem_delayed;
 	u8 cal_done;
+	bool qdss_cfg_missing;
 
 	/* protected with struct ath12k_qmi::event_lock */
 	bool block_event;
