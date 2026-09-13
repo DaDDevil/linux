@@ -2280,6 +2280,8 @@ int ath12k_qmi_host_cap_send(struct ath12k_base *ab)
 {
 	struct qmi_wlanfw_host_cap_req_msg_v01 req = {};
 	struct qmi_wlanfw_host_cap_resp_msg_v01 resp = {};
+	const struct firmware *qdss_fw;
+	u64 feature_list;
 	struct qmi_txn txn;
 	int ret = 0;
 
@@ -2307,9 +2309,32 @@ int ath12k_qmi_host_cap_send(struct ath12k_base *ab)
 	 */
 	req.cal_done = 1;
 
-	if (ab->hw_params->qmi_cnss_feature_bitmap) {
+	feature_list = ab->hw_params->qmi_cnss_feature_bitmap;
+
+	if (feature_list & BIT(CNSS_QDSS_CFG_MISS_V01)) {
+		ab->qmi.qdss_cfg_missing = true;
+	} else {
+		/*
+		 * If CNSS_QDSS_CFG_MISS_V01 is not set by hw_params, probe for
+		 * the QDSS config file. If absent, fall back to declaring QDSS
+		 * config missing to gracefully support upstream linux-firmware.
+		 */
+		qdss_fw = ath12k_core_firmware_request(ab, ATH12K_QMI_QDSS_CONFIG_FILE);
+		if (IS_ERR(qdss_fw)) {
+			feature_list |= BIT(CNSS_QDSS_CFG_MISS_V01);
+			ab->qmi.qdss_cfg_missing = true;
+			ath12k_dbg(ab, ATH12K_DBG_QMI,
+				   "no %s found, fallback to CNSS_QDSS_CFG_MISS_V01\n",
+				   ATH12K_QMI_QDSS_CONFIG_FILE);
+		} else {
+			release_firmware(qdss_fw);
+			ab->qmi.qdss_cfg_missing = false;
+		}
+	}
+
+	if (feature_list) {
 		req.feature_list_valid = 1;
-		req.feature_list = ab->hw_params->qmi_cnss_feature_bitmap;
+		req.feature_list = feature_list;
 	}
 
 	/* BRINGUP: here we are piggybacking a lot of stuff using
@@ -3421,6 +3446,9 @@ static int ath12k_qmi_wlanfw_qdss_dnld_send_sync(struct ath12k_base *ab)
 	u32 remaining;
 	int ret;
 
+	if (ab->qmi.qdss_cfg_missing)
+		return 0;
+
 	fw_entry = ath12k_core_firmware_request(ab, ATH12K_QMI_QDSS_CONFIG_FILE);
 	if (IS_ERR(fw_entry)) {
 		ath12k_warn(ab, "qmi failed to load %s: %ld\n",
@@ -4094,7 +4122,8 @@ int ath12k_qmi_event_load_bdf(struct ath12k_qmi *qmi)
 	 * request. Failure is deliberately not propagated, as downstream's
 	 * caller also ignores it.
 	 */
-	ath12k_qmi_wlanfw_qdss_dnld_send_sync(ab);
+	if (!ab->qmi.qdss_cfg_missing)
+		ath12k_qmi_wlanfw_qdss_dnld_send_sync(ab);
 
 	return ret;
 }
