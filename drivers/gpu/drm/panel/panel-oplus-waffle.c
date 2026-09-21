@@ -14,6 +14,8 @@
 
 #include <drm/display/drm_dsc.h>
 #include <drm/display/drm_dsc_helper.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
@@ -25,6 +27,7 @@ struct panel_aa545_p_3_a0005_dsc {
 	struct drm_dsc_config dsc;
 	struct regulator_bulk_data supplies[2];
 	struct gpio_desc *reset_gpio;
+	struct drm_connector *connector;
 };
 
 static inline
@@ -43,11 +46,103 @@ static void panel_aa545_p_3_a0005_dsc_reset(struct panel_aa545_p_3_a0005_dsc *ct
 	msleep(30);
 }
 
-static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx)
+static void panel_aa545_p_3_a0005_dsc_timing_switch_120hz(struct mipi_dsi_multi_context *ctx)
+{
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x02);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbe, 0x65);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x02);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa7, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x00, 0x00, 0x80, 0x00, 0x00, 0x10);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb6, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb8, 0x03);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x2d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x80, 0x40);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x85, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x93, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x94, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x95, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x96, 0x0d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa0, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa1, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xeb, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+}
+
+static void panel_aa545_p_3_a0005_dsc_timing_switch_90hz(struct mipi_dsi_multi_context *ctx)
+{
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x08);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbe, 0x65);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x02);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa7, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x00, 0x00, 0x80, 0x00, 0x00, 0x10);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb6, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb8, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x2d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x80, 0x40);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x8b, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x93, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x94, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x95, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x96, 0x0d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x98, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x99, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x9a, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x9b, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa0, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa1, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xeb, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+}
+
+static void panel_aa545_p_3_a0005_dsc_timing_switch_60hz(struct mipi_dsi_multi_context *ctx)
+{
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xbe, 0x65);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x02);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa7, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x01, 0x00, 0x80, 0x00, 0x00, 0x10);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb6, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xb8, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x2d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x80, 0x40);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x84, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x93, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x94, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x95, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x96, 0x0d);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x98, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x99, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x9a, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x9b, 0xff);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa0, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xa1, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xeb, 0x00);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
+}
+
+static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx, int mode_idx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-    ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x02);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf8, 0x01);
@@ -201,32 +296,18 @@ static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx)
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 120);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5a, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x5b, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS,
-				     0x01);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x60, 0x02);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x20);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbd, 0x45);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xbe, 0x65);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x02);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xa7, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0,
-				     0x01, 0x00, 0x80, 0x00, 0x00, 0x10);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb6, 0x20);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb8, 0x03);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x2d);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x80, 0x40);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x85, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x93, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x94, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x95, 0x01);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x96, 0x0d);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xa0, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xa1, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xeb, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);	
+	switch (mode_idx) {
+	case 1: /* 90Hz */
+		panel_aa545_p_3_a0005_dsc_timing_switch_90hz(&dsi_ctx);
+		break;
+	case 2: /* 60Hz */
+		panel_aa545_p_3_a0005_dsc_timing_switch_60hz(&dsi_ctx);
+		break;
+	case 0: /* 120Hz */
+	default:
+		panel_aa545_p_3_a0005_dsc_timing_switch_120hz(&dsi_ctx);
+		break;
+	}	
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x53);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x83, 0x77);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x88,
@@ -269,12 +350,91 @@ static int panel_aa545_p_3_a0005_dsc_off(struct panel_aa545_p_3_a0005_dsc *ctx)
 	return dsi_ctx.accum_err;
 }
 
+static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_modes[] = {
+	/* 1440x3168 @ 120Hz */
+	{
+		.clock = 599808,
+		.hdisplay = 1440,
+		.hsync_start = 1440 + 64,
+		.hsync_end = 1440 + 64 + 8,
+		.htotal = 1440 + 64 + 8 + 50,
+		.vdisplay = 3168,
+		.vsync_start = 3168 + 16,
+		.vsync_end = 3168 + 16 + 4,
+		.vtotal = 3168 + 16 + 4 + 12,
+		.width_mm = 71,
+		.height_mm = 158,
+		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+	},
+	/* 1440x3168 @ 90Hz */
+	{
+		.clock = 449856,
+		.hdisplay = 1440,
+		.hsync_start = 1440 + 64,
+		.hsync_end = 1440 + 64 + 8,
+		.htotal = 1440 + 64 + 8 + 50,
+		.vdisplay = 3168,
+		.vsync_start = 3168 + 16,
+		.vsync_end = 3168 + 16 + 4,
+		.vtotal = 3168 + 16 + 4 + 12,
+		.width_mm = 71,
+		.height_mm = 158,
+		.type = DRM_MODE_TYPE_DRIVER,
+	},
+	/* 1440x3168 @ 60Hz */
+	{
+		.clock = 299904,
+		.hdisplay = 1440,
+		.hsync_start = 1440 + 64,
+		.hsync_end = 1440 + 64 + 8,
+		.htotal = 1440 + 64 + 8 + 50,
+		.vdisplay = 3168,
+		.vsync_start = 3168 + 16,
+		.vsync_end = 3168 + 16 + 4,
+		.vtotal = 3168 + 16 + 4 + 12,
+		.width_mm = 71,
+		.height_mm = 158,
+		.type = DRM_MODE_TYPE_DRIVER,
+	},
+};
+
+static int panel_aa545_p_3_a0005_dsc_get_current_mode(struct panel_aa545_p_3_a0005_dsc *ctx)
+{
+	struct drm_connector *connector = ctx->connector;
+	struct drm_crtc_state *crtc_state;
+	int vrefresh;
+	int i;
+
+	if (!connector || !connector->state || !connector->state->crtc)
+		return 0;
+
+	crtc_state = connector->state->crtc->state;
+	if (!crtc_state)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes); i++) {
+		if (drm_mode_match(&crtc_state->mode,
+				   &panel_aa545_p_3_a0005_dsc_modes[i],
+				   DRM_MODE_MATCH_TIMINGS | DRM_MODE_MATCH_CLOCK))
+			return i;
+	}
+
+	vrefresh = drm_mode_vrefresh(&crtc_state->mode);
+	if (vrefresh == 60)
+		return 2;
+	if (vrefresh == 90)
+		return 1;
+
+	return 0;
+}
+
 static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
 {
 	struct panel_aa545_p_3_a0005_dsc *ctx = to_panel_aa545_p_3_a0005_dsc(panel);
 	struct device *dev = &ctx->dsi->dev;
 	struct drm_dsc_picture_parameter_set pps;
-	int ret;
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	int ret, mode_idx;
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
 	if (ret < 0) {
@@ -284,7 +444,9 @@ static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
 
 	panel_aa545_p_3_a0005_dsc_reset(ctx);
 
-	ret = panel_aa545_p_3_a0005_dsc_on(ctx);
+	mode_idx = panel_aa545_p_3_a0005_dsc_get_current_mode(ctx);
+
+	ret = panel_aa545_p_3_a0005_dsc_on(ctx, mode_idx);
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
@@ -294,20 +456,18 @@ static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
 
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
-	ret = mipi_dsi_picture_parameter_set(ctx->dsi, &pps);
-	if (ret < 0) {
-		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
-		return ret;
+	mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
+	mipi_dsi_compression_mode_ext_multi(&dsi_ctx, true, MIPI_DSI_COMPRESSION_DSC, 0);
+	mipi_dsi_msleep(&dsi_ctx, 28);
+
+	if (dsi_ctx.accum_err) {
+		dev_err(dev, "Failed to transmit DSC PPS / enable compression: %d\n",
+			dsi_ctx.accum_err);
+		panel_aa545_p_3_a0005_dsc_off(ctx);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
+		return dsi_ctx.accum_err;
 	}
-
-	ret = mipi_dsi_compression_mode(ctx->dsi, true);
-	if (ret < 0) {
-		dev_err(dev, "failed to enable compression mode: %d\n", ret);
-		return ret;
-	}
-
-
-	msleep(28); /* TODO: Is this panel-dependent? */
 
 	return 0;
 }
@@ -328,25 +488,33 @@ static int panel_aa545_p_3_a0005_dsc_unprepare(struct drm_panel *panel)
 	return 0;
 }
 
-static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_mode = {
-	.clock = (1440 + 64 + 8 + 50) * (3168 + 16 + 4 + 12) * 120 / 1000,
-	.hdisplay = 1440,
-	.hsync_start = 1440 + 64,
-	.hsync_end = 1440 + 64 + 8,
-	.htotal = 1440 + 64 + 8 + 50,
-	.vdisplay = 3168,
-	.vsync_start = 3168 + 16,
-	.vsync_end = 3168 + 16 + 4,
-	.vtotal = 3168 + 16 + 4 + 12,
-	.width_mm = 71,
-	.height_mm = 158,
-	.type = DRM_MODE_TYPE_DRIVER,
-};
-
 static int panel_aa545_p_3_a0005_dsc_get_modes(struct drm_panel *panel,
 					       struct drm_connector *connector)
 {
-	return drm_connector_helper_get_modes_fixed(connector, &panel_aa545_p_3_a0005_dsc_mode);
+	struct panel_aa545_p_3_a0005_dsc *ctx = to_panel_aa545_p_3_a0005_dsc(panel);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes); i++) {
+		const struct drm_display_mode *m = &panel_aa545_p_3_a0005_dsc_modes[i];
+		struct drm_display_mode *mode;
+
+		mode = drm_mode_duplicate(connector->dev, m);
+		if (!mode)
+			return -ENOMEM;
+
+		if (i == 0)
+			mode->type |= DRM_MODE_TYPE_PREFERRED;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
+	}
+
+	connector->display_info.width_mm = 71;
+	connector->display_info.height_mm = 158;
+	connector->display_info.bpc = 10;
+	ctx->connector = connector;
+
+	return ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes);
 }
 
 static const struct drm_panel_funcs panel_aa545_p_3_a0005_dsc_panel_funcs = {
@@ -439,8 +607,7 @@ static int panel_aa545_p_3_a0005_dsc_probe(struct mipi_dsi_device *dsi)
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB101010;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO_BURST |
-			  MIPI_DSI_MODE_NO_EOT_PACKET |
+	dsi->mode_flags = MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
 
 	ctx->panel.prepare_prev_first = true;
@@ -452,19 +619,33 @@ static int panel_aa545_p_3_a0005_dsc_probe(struct mipi_dsi_device *dsi)
 
 	drm_panel_add(&ctx->panel);
 
-	/* This panel only supports DSC; unconditionally enable it */
+	/* This panel only supports DSC 1.1; unconditionally enable it */
 	dsi->dsc = &ctx->dsc;
 
 	ctx->dsc.dsc_version_major = 1;
 	ctx->dsc.dsc_version_minor = 1;
 
-	/* TODO: Pass slice_per_pkt = 2 */
 	ctx->dsc.slice_height = 22;
 	ctx->dsc.slice_width = 720;
 	ctx->dsc.slice_count = 2;
 	ctx->dsc.bits_per_component = 10;
-	ctx->dsc.bits_per_pixel = 8 << 4; /* 4 fractional bits */
+	ctx->dsc.bits_per_pixel = 8 << 4; /* 4 fractional bits = 8 bpp */
 	ctx->dsc.block_pred_enable = true;
+	ctx->dsc.simple_422 = 0;
+	ctx->dsc.convert_rgb = 1;
+	ctx->dsc.vbr_enable = 0;
+
+	/* Pre-populate DSC 1.1 parameters and RC model */
+	ctx->dsc.pic_width = 1440;
+	ctx->dsc.pic_height = 3168;
+	ctx->dsc.slice_chunk_size = 720;
+	ctx->dsc.line_buf_depth = ctx->dsc.bits_per_component + 1;
+
+	drm_dsc_set_const_params(&ctx->dsc);
+	drm_dsc_set_rc_buf_thresh(&ctx->dsc);
+	drm_dsc_setup_rc_params(&ctx->dsc, DRM_DSC_1_1_PRE_SCR);
+	ctx->dsc.initial_scale_value = drm_dsc_initial_scale_value(&ctx->dsc);
+	drm_dsc_compute_rc_parameters(&ctx->dsc);
 
 	ret = mipi_dsi_attach(dsi);
 	if (ret < 0) {
@@ -488,7 +669,9 @@ static void panel_aa545_p_3_a0005_dsc_remove(struct mipi_dsi_device *dsi)
 }
 
 static const struct of_device_id panel_aa545_p_3_a0005_dsc_of_match[] = {
-	{ .compatible = "panel,aa545-p-3-a0005-dsc" }, // FIXME
+	{ .compatible = "panel,aa545-p-3-a0005-dsc" },
+	{ .compatible = "oplus,ac545-p-3-a0005-dsc" },
+	{ .compatible = "oplus,aa545-p-3-a0005-dsc" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, panel_aa545_p_3_a0005_dsc_of_match);
