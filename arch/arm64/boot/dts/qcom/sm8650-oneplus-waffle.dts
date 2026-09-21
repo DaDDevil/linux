@@ -92,15 +92,20 @@
         bootargs = "console=tty0 root=PARTUUID=4760be34-a36a-4316-8cbd-f65bd4a7cf85 rw";
     };
     
+    /*
+     * Volume DOWN. The same pm8550 gpio6 button the HDK maps as volume up:
+     * on this board the shipping tree assigns it code 0x72 (KEY_VOLUMEDOWN)
+     * and puts volume up on the PON resin line (see &pon_resin).
+     */
     gpio-keys {
 		compatible = "gpio-keys";
 
-		pinctrl-0 = <&volume_up_n>;
+		pinctrl-0 = <&volume_down_n>;
 		pinctrl-names = "default";
 
-		key-volume-up {
-			label = "Volume Up";
-			linux,code = <KEY_VOLUMEUP>;
+		key-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
 			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
 			debounce-interval = <15>;
 			linux,can-disable;
@@ -403,7 +408,7 @@
 
 &mdss_dsi0_out {
 	data-lanes = <0 1 2 3>;
-	qcom,te-source = "mdp_vsync_e";
+	qcom,te-source = "mdp_vsync_p";
 	remote-endpoint = <&panel_in>;
 };
 
@@ -443,6 +448,21 @@
 &remoteproc_adsp {
 	firmware-name = "qcom/sm8650/oneplus/waffle/adsp.mdt",
 	                "qcom/sm8650/oneplus/waffle/adsp_dtb.mdt";
+	status = "okay";
+};
+
+&ipa {
+	qcom,gsi-loader = "self";
+	memory-region = <&ipa_fw_mem>;
+	firmware-name = "qcom/sm8650/oneplus/waffle/ipa_fws.mbn";
+
+	status = "okay";
+};
+
+&remoteproc_mpss {
+	firmware-name = "qcom/sm8650/oneplus/waffle/modem.mbn",
+			"qcom/sm8650/oneplus/waffle/modem_dtb.mbn";
+
 	status = "okay";
 };
 
@@ -550,7 +570,7 @@
 };
 
 &pm8550_gpios {
-    volume_up_n: volume-up-n-state {
+    volume_down_n: volume-down-n-state {
         pins = "gpio6";
 		function = "normal";
 		input-enable;
@@ -607,7 +627,7 @@
 };
 
 &pon_resin {
-	linux,code = <KEY_VOLUMEDOWN>;
+	linux,code = <KEY_VOLUMEUP>;
 	status = "okay";
 };
 
