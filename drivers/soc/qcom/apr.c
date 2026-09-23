@@ -154,6 +154,13 @@ EXPORT_SYMBOL_GPL(gpr_send_port_pkt);
 static void apr_dev_release(struct device *dev)
 {
 	struct apr_device *adev = to_apr_device(dev);
+	struct packet_router *apr = dev_get_drvdata(adev->dev.parent);
+
+	if (apr) {
+		spin_lock(&apr->svcs_lock);
+		idr_remove(&apr->svcs_idr, adev->svc.id);
+		spin_unlock(&apr->svcs_lock);
+	}
 
 	kfree(adev);
 }
@@ -378,13 +385,10 @@ static void apr_device_remove(struct device *dev)
 {
 	struct apr_device *adev = to_apr_device(dev);
 	struct apr_driver *adrv = to_apr_driver(dev->driver);
-	struct packet_router *apr = dev_get_drvdata(adev->dev.parent);
 
 	if (adrv->remove)
 		adrv->remove(adev);
-	spin_lock(&apr->svcs_lock);
-	idr_remove(&apr->svcs_idr, adev->svc.id);
-	spin_unlock(&apr->svcs_lock);
+	adev->svc.callback = NULL;
 }
 
 static int apr_uevent(const struct device *dev, struct kobj_uevent_env *env)
