@@ -1334,3 +1334,16 @@
 	};
 };
 
+&q6apmbedai {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	dai@18 {
+		reg = <SECONDARY_MI2S_RX>;
+		clocks = <&q6prmcc LPASS_CLK_ID_SEC_MI2S_IBIT
+				  LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+		clock-names = "bclk";
+	};
+};
+
+
