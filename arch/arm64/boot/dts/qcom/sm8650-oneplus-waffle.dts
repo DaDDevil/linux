@@ -257,9 +257,16 @@
 		#sound-dai-cells = <1>;
 	};
 
+	max98357a: audio-codec-spk {
+		compatible = "maxim,max98357a";
+		#sound-dai-cells = <0>;
+	};
+
 	sound {
 		compatible = "qcom,sm8650-sndcard", "qcom,sm8450-sndcard";
 		model = "OnePlus 12";
+		pinctrl-0 = <&sec_mi2s_active>;
+		pinctrl-names = "default";
 		audio-routing = "IN1_HPHL", "HPHL_OUT",
 				"IN2_HPHR", "HPHR_OUT",
 				"IN3_EAR", "AUX_OUT",
@@ -298,6 +305,22 @@
 
 			codec {
 				sound-dai = <&wcd939x 1>, <&swr2 0>, <&lpass_txmacro 0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+
+		sec-mi2s-playback-dai-link {
+			link-name = "Secondary MI2S Playback";
+
+			cpu {
+				sound-dai = <&q6apmbedai SECONDARY_MI2S_RX>;
+			};
+
+			codec {
+				sound-dai = <&max98357a>;
 			};
 
 			platform {
@@ -643,6 +666,36 @@
 		drive-strength = <16>;
 		bias-disable;
 		output-low;
+	};
+
+	sec_mi2s_active: sec-mi2s-active-state {
+		sck-pins {
+			pins = "gpio121";
+			function = "i2s1_sck";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		data0-pins {
+			pins = "gpio122";
+			function = "i2s1_data0";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		ws-pins {
+			pins = "gpio123";
+			function = "i2s1_ws";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		data1-pins {
+			pins = "gpio124";
+			function = "i2s1_data1";
+			drive-strength = <8>;
+			bias-disable;
+		};
 	};
 };
 
