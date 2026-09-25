@@ -92,19 +92,20 @@
         bootargs = "console=tty0 root=PARTUUID=4760be34-a36a-4316-8cbd-f65bd4a7cf85 rw";
     };
     
-	/*
-	 * Volume UP button on pm8550 gpio6 (active low).
-	 * Volume DOWN is connected to the PMIC PON resin line (&pon_resin).
-	 */
+    /*
+     * Volume DOWN. The same pm8550 gpio6 button the HDK maps as volume up:
+     * on this board the shipping tree assigns it code 0x72 (KEY_VOLUMEDOWN)
+     * and puts volume up on the PON resin line (see &pon_resin).
+     */
     gpio-keys {
 		compatible = "gpio-keys";
 
 		pinctrl-0 = <&volume_down_n>;
 		pinctrl-names = "default";
 
-		key-volume-up {
-			label = "Volume Up";
-			linux,code = <KEY_VOLUMEUP>;
+		key-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
 			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
 			debounce-interval = <15>;
 			linux,can-disable;
@@ -764,7 +765,7 @@
 };
 
 &pon_resin {
-	linux,code = <KEY_VOLUMEDOWN>;
+	linux,code = <KEY_VOLUMEUP>;
 	status = "okay";
 };
 
