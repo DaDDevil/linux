@@ -278,7 +278,15 @@
 				"TX SWR_INPUT0", "ADC1_OUTPUT",
 				"TX SWR_INPUT1", "ADC2_OUTPUT",
 				"TX SWR_INPUT2", "ADC3_OUTPUT",
-				"TX SWR_INPUT3", "ADC4_OUTPUT";
+				"TX SWR_INPUT3", "ADC4_OUTPUT",
+				"TX SWR_INPUT4", "ADC1_OUTPUT",
+				"TX SWR_INPUT5", "ADC2_OUTPUT",
+				"TX SWR_INPUT6", "ADC3_OUTPUT",
+				"TX SWR_INPUT7", "ADC4_OUTPUT",
+				"TX SWR_INPUT8", "ADC1_OUTPUT",
+				"TX SWR_INPUT9", "ADC4_OUTPUT",
+				"TX SWR_INPUT10", "ADC3_OUTPUT",
+				"TX SWR_INPUT11", "ADC4_OUTPUT";
 
 		wcd-playback-dai-link {
 			link-name = "WCD Playback";
@@ -304,7 +312,7 @@
 			};
 
 			codec {
-				sound-dai = <&wcd939x 1>, <&swr2 0>, <&lpass_txmacro 0>;
+				sound-dai = <&wcd939x 1>, <&swr2 1>, <&lpass_txmacro 0>;
 			};
 
 			platform {
