@@ -538,10 +538,23 @@ static const struct qcom_snd_soc_common sm8550_priv_data = {
 			 SND_SOC_DAIFMT_I2S,
 };
 
+static const struct snd_soc_dapm_route sm8650_extra_routes[] = {
+	{"TX SWR_INPUT4", NULL, "ADC1_OUTPUT"},
+	{"TX SWR_INPUT5", NULL, "ADC2_OUTPUT"},
+	{"TX SWR_INPUT6", NULL, "ADC3_OUTPUT"},
+	{"TX SWR_INPUT7", NULL, "ADC4_OUTPUT"},
+	{"TX SWR_INPUT8", NULL, "ADC1_OUTPUT"},
+	{"TX SWR_INPUT9", NULL, "ADC4_OUTPUT"},
+	{"TX SWR_INPUT10", NULL, "ADC3_OUTPUT"},
+	{"TX SWR_INPUT11", NULL, "ADC4_OUTPUT"},
+};
+
 static const struct qcom_snd_soc_common sm8650_priv_data = {
 	.driver_name = "sm8650",
 	.dapm_widgets = sc8280xp_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(sc8280xp_dapm_widgets),
+	.dapm_routes = sm8650_extra_routes,
+	.num_dapm_routes = ARRAY_SIZE(sm8650_extra_routes),
 	.wcd_jack = true,
 	/* I2S Connected to HDMI */
 	.mi2s_mclk_enable = true,
