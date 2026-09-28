@@ -1248,14 +1248,17 @@ static int q6apm_slot_put(struct snd_kcontrol *kcontrol,
 	mutex_unlock(&apm->lock);
 
 	if (!graph) {
-		ret = -EBUSY;
+		slot->on = on;
+		ret = 1;
 		goto out;
 	}
 
 	if (graph->start_count && slot->gated)
 		ret = audioreach_set_right_slot(apm, graph->info, on);
-	else if (graph->start_count || slot->voice)
+	else if (graph->start_count)
 		ret = -EBUSY;
+	else
+		slot->on = on;
 
 	kref_put(&graph->refcount, q6apm_put_audioreach_graph);
 
@@ -1302,7 +1305,7 @@ int q6apm_slot_add(struct snd_soc_component *component, int graph_id,
 	slot->card = component->card->snd_card;
 	slot->graph_id = graph_id;
 	slot->voice = q6apm_info_is_voice(info, SNDRV_PCM_STREAM_PLAYBACK);
-	slot->dflt = !slot->voice;
+	slot->dflt = true;
 	slot->on = slot->dflt;
 
 	kc.name = name;
