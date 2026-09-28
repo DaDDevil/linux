@@ -744,6 +744,12 @@
 	vdd3-supply = <&vreg_l5b_3p1>;
 };
 
+&pm8550b_haptics {
+	qcom,vmax-microvolt = <2400000>;
+	qcom,lra-period-us = <7690>;
+	status = "okay";
+};
+
 &pm8550vs_c {
 	status = "okay";
 };
