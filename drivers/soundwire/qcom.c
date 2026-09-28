@@ -1393,7 +1393,6 @@ static int qcom_swrm_register_dais(struct qcom_swrm_ctrl *ctrl)
 {
 	int num_dais = ctrl->num_dout_ports + ctrl->num_din_ports;
 	struct snd_soc_dai_driver *dais;
-	struct snd_soc_pcm_stream *stream;
 	struct device *dev = ctrl->dev;
 	int i;
 
@@ -1411,15 +1410,15 @@ static int qcom_swrm_register_dais(struct qcom_swrm_ctrl *ctrl)
 		if (!dais[i].name)
 			return -ENOMEM;
 
-		if (i < ctrl->num_dout_ports)
-			stream = &dais[i].playback;
-		else
-			stream = &dais[i].capture;
+		dais[i].playback.channels_min = 1;
+		dais[i].playback.channels_max = 1;
+		dais[i].playback.rates = SNDRV_PCM_RATE_48000;
+		dais[i].playback.formats = SNDRV_PCM_FMTBIT_S16_LE;
 
-		stream->channels_min = 1;
-		stream->channels_max = 1;
-		stream->rates = SNDRV_PCM_RATE_48000;
-		stream->formats = SNDRV_PCM_FMTBIT_S16_LE;
+		dais[i].capture.channels_min = 1;
+		dais[i].capture.channels_max = 1;
+		dais[i].capture.rates = SNDRV_PCM_RATE_48000;
+		dais[i].capture.formats = SNDRV_PCM_FMTBIT_S16_LE;
 
 		dais[i].ops = &qcom_swrm_pdm_dai_ops;
 		dais[i].id = i;
