@@ -22,6 +22,11 @@ properties:
   compatible:
     oneOf:
       - items:
+          - const: oneplus,waffle-pmic-glink
+          - const: qcom,sm8650-pmic-glink
+          - const: qcom,sm8550-pmic-glink
+          - const: qcom,pmic-glink
+      - items:
           - enum:
               - qcom,glymur-pmic-glink
               - qcom,kaanapali-pmic-glink
@@ -55,6 +60,18 @@ properties:
 
   '#address-cells':
     const: 1
+
+  io-channels:
+    items:
+      - description: Battery connector thermistor
+      - description: USB connector thermistor
+      - description: Charging subboard thermistor
+
+  io-channel-names:
+    items:
+      - const: battery-connector
+      - const: usb-connector
+      - const: subboard
 
   '#size-cells':
     const: 0
@@ -132,4 +149,3 @@ examples:
         };
     };
 ...
-

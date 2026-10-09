@@ -950,12 +950,15 @@ static const struct rpmh_vreg_hw_data pmic5_pldo502ln = {
 	.ops = &rpmh_regulator_vrm_ops,
 	.voltage_ranges = (struct linear_range[]) {
 		REGULATOR_LINEAR_RANGE(1800000, 0,  2,  200000),
-		REGULATOR_LINEAR_RANGE(2608000, 3,  28, 16000),
-		REGULATOR_LINEAR_RANGE(3104000, 29, 30, 96000),
-		REGULATOR_LINEAR_RANGE(3312000, 31, 31, 0),
+		REGULATOR_LINEAR_RANGE(2608000, 3,  21, 16000),
+		/* AOP may require the nominal vote rather than a rounded value. */
+		REGULATOR_LINEAR_RANGE(2900000, 22, 22, 0),
+		REGULATOR_LINEAR_RANGE(2912000, 23, 29, 16000),
+		REGULATOR_LINEAR_RANGE(3104000, 30, 31, 96000),
+		REGULATOR_LINEAR_RANGE(3312000, 32, 32, 0),
 	},
-	.n_linear_ranges = 4,
-	.n_voltages = 32,
+	.n_linear_ranges = 6,
+	.n_voltages = 33,
 	.pmic_mode_map = pmic_mode_map_pmic5_ldo_hpm,
 	.of_map_mode = rpmh_regulator_pmic4_ldo_of_map_mode,
 };
@@ -990,10 +993,13 @@ static const struct rpmh_vreg_hw_data pmic5_nldo502 = {
 	.regulator_type = VRM,
 	.ops = &rpmh_regulator_vrm_drms_ops,
 	.voltage_ranges = (struct linear_range[]) {
-		REGULATOR_LINEAR_RANGE(528000, 0, 127, 8000),
+		REGULATOR_LINEAR_RANGE(528000, 0, 71, 8000),
+		/* Preserve the nominal 1.1 V request expected by AOP firmware. */
+		REGULATOR_LINEAR_RANGE(1100000, 72, 72, 0),
+		REGULATOR_LINEAR_RANGE(1104000, 73, 128, 8000),
 	},
-	.n_linear_ranges = 1,
-	.n_voltages = 128,
+	.n_linear_ranges = 3,
+	.n_voltages = 129,
 	.hpm_min_load_uA = 30000,
 	.pmic_mode_map = pmic_mode_map_pmic5_ldo,
 	.of_map_mode = rpmh_regulator_pmic4_ldo_of_map_mode,

@@ -57,9 +57,7 @@
 #define VFE_BUS_WM_IMAGE_ADDR(n)	(BUS_REG_BASE + 0x204 + (n) * 0x100)
 #define VFE_BUS_WM_FRAME_INCR(n)	(BUS_REG_BASE + 0x208 + (n) * 0x100)
 #define VFE_BUS_WM_IMAGE_CFG_0(n)	(BUS_REG_BASE + 0x20c + (n) * 0x100)
-#define		WM_IMAGE_CFG_0_DEFAULT_WIDTH	(0xFFFF)
 #define VFE_BUS_WM_IMAGE_CFG_2(n)	(BUS_REG_BASE + 0x214 + (n) * 0x100)
-#define		WM_IMAGE_CFG_2_DEFAULT_STRIDE	(0xFFFF)
 #define VFE_BUS_WM_PACKER_CFG(n)	(BUS_REG_BASE + 0x218 + (n) * 0x100)
 
 #define VFE_BUS_WM_IRQ_SUBSAMPLE_PERIOD(n)	(BUS_REG_BASE + 0x230 + (n) * 0x100)
@@ -74,6 +72,7 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
 	struct v4l2_pix_format_mplane *pix =
 		&line->video_out.active_fmt.fmt.pix_mp;
+	u32 stride = ALIGN(pix->plane_fmt[0].bytesperline, 16);
 
 	wm = RDI_WM(wm);
 
@@ -83,15 +82,16 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 	writel(0x0, vfe->base + VFE_BUS_WM_TEST_BUS_CTRL);
 
 	if (IS_VFE_690(vfe))
-		writel(ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height,
+		writel(stride * pix->height,
 		       vfe->base + VFE_BUS_WM_FRAME_INCR(wm));
 	else
-		writel(ALIGN(pix->plane_fmt[0].bytesperline, 16) * pix->height >> 8,
+		writel(stride * pix->height >> 8,
 		       vfe->base + VFE_BUS_WM_FRAME_INCR(wm));
 
-	writel((WM_IMAGE_CFG_0_DEFAULT_WIDTH & 0xFFFF),
+	/* RDI clients are line based; width is expressed in 16-byte words. */
+	writel((pix->height << 16) | (stride >> 4),
 	       vfe->base + VFE_BUS_WM_IMAGE_CFG_0(wm));
-	writel(WM_IMAGE_CFG_2_DEFAULT_STRIDE,
+	writel(stride,
 	       vfe->base + VFE_BUS_WM_IMAGE_CFG_2(wm));
 	writel(0, vfe->base + VFE_BUS_WM_PACKER_CFG(wm));
 
@@ -109,7 +109,7 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 	writel(1, vfe->base + VFE_BUS_WM_MMU_PREFETCH_CFG(wm));
 	writel(0xFFFFFFFF, vfe->base + VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(wm));
 
-	writel(WM_CFG_EN | WM_CFG_MODE, vfe->base + VFE_BUS_WM_CFG(wm));
+	writel(WM_CFG_EN, vfe->base + VFE_BUS_WM_CFG(wm));
 }
 
 static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
@@ -118,7 +118,7 @@ static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
 	writel(0, vfe->base + VFE_BUS_WM_CFG(wm));
 }
 
-static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
+static void vfe_wm_update(struct vfe_device *vfe, u8 wm, dma_addr_t addr,
 			  struct vfe_line *line)
 {
 	wm = RDI_WM(wm);
@@ -128,8 +128,7 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
 	else
 		writel((addr >> 8), vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm));
 
-	dev_dbg(vfe->camss->dev, "wm:%d, image buf addr:0x%x\n",
-		wm, addr);
+	dev_dbg(vfe->camss->dev, "wm:%d, image buf addr:%pad\n", wm, &addr);
 }
 
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)

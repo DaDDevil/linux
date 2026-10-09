@@ -249,7 +249,7 @@ static void vfe_enable_irq(struct vfe_device *vfe)
 	       TFE_BUS_IRQ_MASK_0_IMG_VIOL, vfe->base + TFE_BUS_IRQ_MASK_0);
 }
 
-static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
+static void vfe_wm_update(struct vfe_device *vfe, u8 wm, dma_addr_t addr,
 			  struct vfe_line *line)
 {
 	u8 client = tfe_wm_client_map[wm];

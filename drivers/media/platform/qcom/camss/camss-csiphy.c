@@ -155,7 +155,12 @@ static int csiphy_set_clock_rates_legacy(struct csiphy_device *csiphy)
 		struct camss_clock *clock = &csiphy->clock[i];
 
 		if (csiphy->rate_set[i]) {
-			u64 min_rate = link_freq / 4;
+			/* SM8650 C-PHY RX consumes 32 encoded bits per clock.
+			 * A trio carries 16 bits in seven symbols, so the
+			 * required RX clock is the symbol rate divided by 14.
+			 */
+			u64 min_rate = csiphy->cfg.csi2->lane_cfg.is_cphy ?
+				DIV_ROUND_UP_ULL(link_freq, 14) : link_freq / 4;
 			long round_rate;
 
 			camss_add_clock_margin(&min_rate);
@@ -281,6 +286,11 @@ static int csiphy_stream_on_legacy(struct csiphy_device *csiphy)
 			"Cannot get CSI2 transmitter's link frequency\n");
 		return -EINVAL;
 	}
+
+	if (cfg->csi2->lane_cfg.is_cphy &&
+	    !((link_freq > 1000000000LL && link_freq <= 1500000000LL) ||
+	      (link_freq > 1800000000LL && link_freq <= 2500000000LL)))
+		return -EINVAL;
 
 	if (csiphy->base_clk_mux) {
 		val = readl_relaxed(csiphy->base_clk_mux);

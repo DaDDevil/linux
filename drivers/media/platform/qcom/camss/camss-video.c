@@ -256,6 +256,7 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct media_entity *entity;
 	struct media_pad *pad;
 	struct v4l2_subdev *subdev;
+	struct media_entity *failed_entity;
 	int ret;
 
 	ret = video_device_pipeline_alloc_start(vdev);
@@ -283,11 +284,26 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
 		if (ret < 0 && ret != -ENOIOCTLCMD)
-			goto error;
+			goto stop_subdevs;
 	}
 
 	return 0;
 
+stop_subdevs:
+	/* Unwind only the subdevices started before the failing entity. */
+	failed_entity = entity;
+	entity = &vdev->entity;
+	while (entity != failed_entity) {
+		pad = media_pad_remote_pad_first(&entity->pads[0]);
+		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
+			break;
+		entity = pad->entity;
+		if (entity == failed_entity)
+			break;
+		subdev = media_entity_to_v4l2_subdev(entity);
+		if (subdev->s_stream_enabled)
+			v4l2_subdev_call(subdev, video, s_stream, 0);
+	}
 error:
 	video_device_pipeline_stop(vdev);
 
