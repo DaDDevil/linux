@@ -14,6 +14,7 @@
  * format (CMD_SET_TOUCH_REPORT_CONFIG) and parses exactly that.
  */
 
+#include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/input.h>
@@ -35,7 +36,12 @@
 #define TCM_CMD_DISABLE_REPORT			0x06
 #define TCM_CMD_RUN_APPLICATION_FIRMWARE	0x14
 #define TCM_CMD_GET_APPLICATION_INFO		0x20
+#define TCM_CMD_GET_DYNAMIC_CONFIG		0x23
+#define TCM_CMD_SET_DYNAMIC_CONFIG		0x24
 #define TCM_CMD_SET_TOUCH_REPORT_CONFIG		0x26
+
+/* generic dynamic configuration IDs */
+#define TCM_DC_ENABLE_GRIP_SUPPRESSION		0x0b
 
 /* status codes (message code field, below 0x10) */
 #define TCM_STATUS_IDLE				0x00
@@ -66,6 +72,13 @@
 #define TCM_TOUCH_OBJECT_N_X_POSITION		0x08
 #define TCM_TOUCH_OBJECT_N_Y_POSITION		0x09
 #define TCM_TOUCH_NUM_OF_ACTIVE_OBJECTS		0x18
+
+/* object classifications */
+#define TCM_OBJECT_LIFT				0x00
+#define TCM_OBJECT_FINGER				0x01
+#define TCM_OBJECT_GLOVED_FINGER			0x02
+#define TCM_OBJECT_PALM				0x06
+#define TCM_OBJECT_EDGE_TOUCH			0x08
 
 /*
  * Every message the chip sends fits well inside this: identification is 28
@@ -150,6 +163,8 @@ struct tcm_data {
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[2];
 	struct touchscreen_properties props;
+	/* Suppressed contacts stay suppressed until lifted or absent. */
+	unsigned long rejected_contacts;
 
 	/* DMA-safe transfer buffers */
 	u8 *tx_fill;
@@ -190,6 +205,7 @@ static void tcm_report_touches(struct tcm_data *tcm, const u8 *payload,
 			       u16 length)
 {
 	const struct tcm_touch_object *obj;
+	unsigned long present = 0, seen = 0;
 	unsigned int count, i;
 
 	if (!tcm->input)
@@ -207,11 +223,45 @@ static void tcm_report_touches(struct tcm_data *tcm, const u8 *payload,
 	}
 
 	obj = (const struct tcm_touch_object *)&payload[1];
+	/* Validate the complete frame before changing any slot state. */
+	for (i = 0; i < count; i++, obj++) {
+		if (obj->index >= tcm->input->mt->num_slots)
+			continue;
+		if (seen & BIT(obj->index)) {
+			dev_err_ratelimited(&tcm->spi->dev,
+					    "duplicate slot %u in touch report\n",
+					    obj->index);
+			return;
+		}
+		seen |= BIT(obj->index);
+	}
+
+	obj = (const struct tcm_touch_object *)&payload[1];
 	for (i = 0; i < count; i++, obj++) {
 		u16 x = get_unaligned_le16(&obj->x);
 		u16 y = get_unaligned_le16(&obj->y);
 
-		if (obj->index >= TCM_MAX_FINGERS)
+		if (obj->index >= tcm->input->mt->num_slots)
+			continue;
+
+		if (obj->classification == TCM_OBJECT_LIFT)
+			continue;
+
+		present |= BIT(obj->index);
+		if (obj->classification == TCM_OBJECT_PALM)
+			tcm->rejected_contacts |= BIT(obj->index);
+
+		dev_dbg(&tcm->spi->dev,
+			"slot %u class %#x at %u,%u rejected=%u\n",
+			obj->index, obj->classification, x, y,
+			!!(tcm->rejected_contacts & BIT(obj->index)));
+
+		/* A resting palm must not turn into a new tap as its shape changes. */
+		if (tcm->rejected_contacts & BIT(obj->index))
+			continue;
+
+		if (obj->classification != TCM_OBJECT_FINGER &&
+		    obj->classification != TCM_OBJECT_GLOVED_FINGER)
 			continue;
 
 		input_mt_slot(tcm->input, obj->index);
@@ -219,6 +269,8 @@ static void tcm_report_touches(struct tcm_data *tcm, const u8 *payload,
 		touchscreen_report_pos(tcm->input, &tcm->props, x, y, true);
 	}
 
+	tcm->rejected_contacts &= present;
+	/* DROP_UNUSED also releases slots that became palms or edge touches. */
 	input_mt_sync_frame(tcm->input);
 	input_sync(tcm->input);
 }
@@ -284,6 +336,8 @@ static int tcm_wait_for(struct tcm_data *tcm, u8 code, void *buf, size_t length)
 			break;
 
 		switch (got) {
+		case TCM_STATUS_NOT_IMPLEMENTED:
+			return -EOPNOTSUPP;
 		case TCM_STATUS_BUSY:
 		case TCM_STATUS_OK:
 		case TCM_REPORT_IDENTIFY:
@@ -318,6 +372,52 @@ static int tcm_request(struct tcm_data *tcm, u8 cmd,
 		return ret;
 
 	return tcm_wait_for(tcm, resp_code, buf, length);
+}
+
+static int tcm_get_dynamic_config(struct tcm_data *tcm, u8 id, u16 *value)
+{
+	struct {
+		struct tcm_message_header header;
+		__le16 value;
+	} __packed response = { 0 };
+	int ret;
+
+	ret = tcm_request(tcm, TCM_CMD_GET_DYNAMIC_CONFIG, &id, sizeof(id),
+			  TCM_STATUS_OK, &response, sizeof(response));
+	if (ret)
+		return ret;
+	if (le16_to_cpu(response.header.length) != sizeof(response.value))
+		return -EPROTO;
+
+	*value = le16_to_cpu(response.value);
+	return 0;
+}
+
+static int tcm_enable_grip_suppression(struct tcm_data *tcm)
+{
+	u8 payload[] = { TCM_DC_ENABLE_GRIP_SUPPRESSION, 1, 0 };
+	u16 value;
+	int ret;
+
+	ret = tcm_get_dynamic_config(tcm, TCM_DC_ENABLE_GRIP_SUPPRESSION,
+				     &value);
+	if (ret)
+		return ret;
+
+	if (!value) {
+		ret = tcm_request(tcm, TCM_CMD_SET_DYNAMIC_CONFIG,
+				  payload, sizeof(payload),
+				  TCM_STATUS_OK, NULL, 0);
+		if (ret)
+			return ret;
+
+		ret = tcm_get_dynamic_config(tcm, TCM_DC_ENABLE_GRIP_SUPPRESSION,
+					     &value);
+		if (ret)
+			return ret;
+	}
+
+	return value == 1 ? 0 : -EPROTO;
 }
 
 static int tcm_power_on(struct tcm_data *tcm)
@@ -453,6 +553,14 @@ static int tcm_hw_init(struct tcm_data *tcm, u16 *max_x, u16 *max_y,
 			"failed to set touch report config: %d\n", ret);
 		return ret;
 	}
+
+	/* Not all application firmware implements this optional setting. */
+	ret = tcm_enable_grip_suppression(tcm);
+	if (ret)
+		dev_warn(&tcm->spi->dev,
+			 "firmware grip suppression unavailable: %d\n", ret);
+	else
+		dev_info(&tcm->spi->dev, "firmware grip suppression enabled\n");
 
 	*max_x = le16_to_cpu(app_info.max_x);
 	*max_y = le16_to_cpu(app_info.max_y);

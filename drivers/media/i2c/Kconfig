@@ -289,6 +289,36 @@ config VIDEO_IMX415
 	  To compile this driver as a module, choose M here: the
 	  module will be called imx415.
 
+config VIDEO_LYT808
+	tristate "Sony LYT808 sensor support"
+	depends on OF
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the Sony LYT808.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called lyt808.
+
+config VIDEO_IMX581
+	tristate "Sony IMX581 sensor support"
+	depends on OF
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the Sony IMX581.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called imx581.
+
+config VIDEO_IMX615
+	tristate "Sony IMX615 sensor support"
+	depends on OF
+	help
+	  This is a Video4Linux2 sensor driver for the Sony
+	  IMX615 camera sensor.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called imx615.
+
 config VIDEO_IMX471
 	tristate "Sony IMX471 sensor support"
 	select V4L2_CCI_I2C
@@ -642,6 +672,16 @@ config VIDEO_OV6211
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ov6211.
+
+config VIDEO_OV64B
+	tristate "OmniVision OV64B40 sensor support"
+	depends on OF
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the OmniVision OV64B40.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ov64b.
 
 config VIDEO_OV64A40
 	tristate "OmniVision OV64A40 sensor support"

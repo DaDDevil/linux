@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Copyright (c) 2026 FIXME
-// Generated with linux-mdss-dsi-panel-driver-generator from vendor device tree:
-//   Copyright (c) 2013, The Linux Foundation. All rights reserved. (FIXME)
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
@@ -21,7 +18,7 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
 
-struct panel_aa545_p_3_a0005_dsc {
+struct boe_aa545 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
 	struct drm_dsc_config dsc;
@@ -30,13 +27,19 @@ struct panel_aa545_p_3_a0005_dsc {
 	struct drm_connector *connector;
 };
 
+enum panel_aa545_refresh_rate {
+	PANEL_AA545_REFRESH_RATE_60HZ,
+	PANEL_AA545_REFRESH_RATE_90HZ,
+	PANEL_AA545_REFRESH_RATE_120HZ,
+};
+
 static inline
-struct panel_aa545_p_3_a0005_dsc *to_panel_aa545_p_3_a0005_dsc(struct drm_panel *panel)
+struct boe_aa545 *to_boe_aa545(struct drm_panel *panel)
 {
-	return container_of_const(panel, struct panel_aa545_p_3_a0005_dsc, panel);
+	return container_of_const(panel, struct boe_aa545, panel);
 }
 
-static void panel_aa545_p_3_a0005_dsc_reset(struct panel_aa545_p_3_a0005_dsc *ctx)
+static void boe_aa545_reset(struct boe_aa545 *ctx)
 {
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 	usleep_range(10000, 11000);
@@ -46,12 +49,12 @@ static void panel_aa545_p_3_a0005_dsc_reset(struct panel_aa545_p_3_a0005_dsc *ct
 	msleep(30);
 }
 
-static void panel_aa545_p_3_a0005_dsc_timing_switch_120hz(struct mipi_dsi_multi_context *ctx)
+static void boe_aa545_timing_switch_120hz(struct mipi_dsi_multi_context *ctx)
 {
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
-	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5e, 0x01);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x02);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
@@ -74,12 +77,12 @@ static void panel_aa545_p_3_a0005_dsc_timing_switch_120hz(struct mipi_dsi_multi_
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 }
 
-static void panel_aa545_p_3_a0005_dsc_timing_switch_90hz(struct mipi_dsi_multi_context *ctx)
+static void boe_aa545_timing_switch_90hz(struct mipi_dsi_multi_context *ctx)
 {
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
-	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5e, 0x01);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x08);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
@@ -106,12 +109,12 @@ static void panel_aa545_p_3_a0005_dsc_timing_switch_90hz(struct mipi_dsi_multi_c
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 }
 
-static void panel_aa545_p_3_a0005_dsc_timing_switch_60hz(struct mipi_dsi_multi_context *ctx)
+static void boe_aa545_timing_switch_60hz(struct mipi_dsi_multi_context *ctx)
 {
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5a, 0x00);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x5b, 0x00);
-	mipi_dsi_dcs_write_seq_multi(ctx, MIPI_DCS_SET_CABC_MIN_BRIGHTNESS, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x5e, 0x01);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x60, 0x01);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x20);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xbd, 0x45);
@@ -138,11 +141,14 @@ static void panel_aa545_p_3_a0005_dsc_timing_switch_60hz(struct mipi_dsi_multi_c
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xff, 0x08, 0x58, 0x00);
 }
 
-static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx, int mode_idx)
+static int boe_aa545_on(struct boe_aa545 *ctx,
+					 enum panel_aa545_refresh_rate rate)
 {
+	struct drm_dsc_picture_parameter_set pps;
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	/* Initialization commands use LP mode, including the DSC PPS. */
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x02);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf8, 0x01);
@@ -159,8 +165,6 @@ static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx, i
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x30);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xae, 0x00);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x80, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x07);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x8a, 0x01);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x4f);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x80, 0x01);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x81, 0x02);
@@ -296,18 +300,30 @@ static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx, i
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
 	mipi_dsi_msleep(&dsi_ctx, 120);
-	switch (mode_idx) {
-	case 1: /* 90Hz */
-		panel_aa545_p_3_a0005_dsc_timing_switch_90hz(&dsi_ctx);
+
+	/* The panel's timing-switch sequence requires HS command mode. */
+	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	switch (rate) {
+	case PANEL_AA545_REFRESH_RATE_90HZ:
+		boe_aa545_timing_switch_90hz(&dsi_ctx);
 		break;
-	case 2: /* 60Hz */
-		panel_aa545_p_3_a0005_dsc_timing_switch_60hz(&dsi_ctx);
+	case PANEL_AA545_REFRESH_RATE_60HZ:
+		boe_aa545_timing_switch_60hz(&dsi_ctx);
 		break;
-	case 0: /* 120Hz */
+	case PANEL_AA545_REFRESH_RATE_120HZ:
 	default:
-		panel_aa545_p_3_a0005_dsc_timing_switch_120hz(&dsi_ctx);
+		boe_aa545_timing_switch_120hz(&dsi_ctx);
 		break;
-	}	
+	}
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	/* Keep panel refresh synchronized with the DRM mode and DPU TE timing. */
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x07);
+	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
+	mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
+	mipi_dsi_compression_mode_ext_multi(&dsi_ctx, true,
+					    MIPI_DSI_COMPRESSION_DSC, 0);
+	mipi_dsi_msleep(&dsi_ctx, 28);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x53);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x83, 0x77);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x88,
@@ -330,16 +346,16 @@ static int panel_aa545_p_3_a0005_dsc_on(struct panel_aa545_p_3_a0005_dsc *ctx, i
 				     0x3f, 0x00, 0x20, 0xff, 0xff, 0x03, 0xff);
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_set_display_brightness_multi(&dsi_ctx, 0x0000);
-    mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 
 	return dsi_ctx.accum_err;
 }
 
-static int panel_aa545_p_3_a0005_dsc_off(struct panel_aa545_p_3_a0005_dsc *ctx)
+static int boe_aa545_off(struct boe_aa545 *ctx)
 {
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xff, 0x08, 0x58, 0x00);
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
@@ -350,7 +366,7 @@ static int panel_aa545_p_3_a0005_dsc_off(struct panel_aa545_p_3_a0005_dsc *ctx)
 	return dsi_ctx.accum_err;
 }
 
-static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_modes[] = {
+static const struct drm_display_mode boe_aa545_modes[] = {
 	/* 1440x3168 @ 120Hz */
 	{
 		.clock = 599808,
@@ -366,7 +382,7 @@ static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_modes[] = {
 		.height_mm = 158,
 		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
 	},
-	/* 1440x3168 @ 90Hz */
+		/* 1440x3168 @ 90Hz */
 	{
 		.clock = 449856,
 		.hdisplay = 1440,
@@ -381,7 +397,7 @@ static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_modes[] = {
 		.height_mm = 158,
 		.type = DRM_MODE_TYPE_DRIVER,
 	},
-	/* 1440x3168 @ 60Hz */
+		/* 1440x3168 @ 60Hz */
 	{
 		.clock = 299904,
 		.hdisplay = 1440,
@@ -398,43 +414,40 @@ static const struct drm_display_mode panel_aa545_p_3_a0005_dsc_modes[] = {
 	},
 };
 
-static int panel_aa545_p_3_a0005_dsc_get_current_mode(struct panel_aa545_p_3_a0005_dsc *ctx)
+static enum panel_aa545_refresh_rate
+boe_aa545_get_current_mode(struct boe_aa545 *ctx)
 {
 	struct drm_connector *connector = ctx->connector;
 	struct drm_crtc_state *crtc_state;
 	int vrefresh;
-	int i;
 
+	/* Use the preferred 120 Hz mode before a CRTC state is available. */
 	if (!connector || !connector->state || !connector->state->crtc)
-		return 0;
+		return PANEL_AA545_REFRESH_RATE_120HZ;
 
 	crtc_state = connector->state->crtc->state;
 	if (!crtc_state)
-		return 0;
-
-	for (i = 0; i < ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes); i++) {
-		if (drm_mode_match(&crtc_state->mode,
-				   &panel_aa545_p_3_a0005_dsc_modes[i],
-				   DRM_MODE_MATCH_TIMINGS | DRM_MODE_MATCH_CLOCK))
-			return i;
-	}
+		return PANEL_AA545_REFRESH_RATE_120HZ;
 
 	vrefresh = drm_mode_vrefresh(&crtc_state->mode);
-	if (vrefresh == 60)
-		return 2;
-	if (vrefresh == 90)
-		return 1;
-
-	return 0;
+	switch (vrefresh) {
+	case 60:
+		return PANEL_AA545_REFRESH_RATE_60HZ;
+	case 90:
+		return PANEL_AA545_REFRESH_RATE_90HZ;
+	case 120:
+		return PANEL_AA545_REFRESH_RATE_120HZ;
+	default:
+		return PANEL_AA545_REFRESH_RATE_120HZ;
+	}
 }
 
-static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
+static int boe_aa545_prepare(struct drm_panel *panel)
 {
-	struct panel_aa545_p_3_a0005_dsc *ctx = to_panel_aa545_p_3_a0005_dsc(panel);
+	struct boe_aa545 *ctx = to_boe_aa545(panel);
 	struct device *dev = &ctx->dsi->dev;
-	struct drm_dsc_picture_parameter_set pps;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
-	int ret, mode_idx;
+	enum panel_aa545_refresh_rate rate;
+	int ret;
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
 	if (ret < 0) {
@@ -442,11 +455,11 @@ static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
 		return ret;
 	}
 
-	panel_aa545_p_3_a0005_dsc_reset(ctx);
+	boe_aa545_reset(ctx);
 
-	mode_idx = panel_aa545_p_3_a0005_dsc_get_current_mode(ctx);
+	rate = boe_aa545_get_current_mode(ctx);
 
-	ret = panel_aa545_p_3_a0005_dsc_on(ctx, mode_idx);
+	ret = boe_aa545_on(ctx, rate);
 	if (ret < 0) {
 		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
@@ -454,31 +467,16 @@ static int panel_aa545_p_3_a0005_dsc_prepare(struct drm_panel *panel)
 		return ret;
 	}
 
-	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
-
-	mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
-	mipi_dsi_compression_mode_ext_multi(&dsi_ctx, true, MIPI_DSI_COMPRESSION_DSC, 0);
-	mipi_dsi_msleep(&dsi_ctx, 28);
-
-	if (dsi_ctx.accum_err) {
-		dev_err(dev, "Failed to transmit DSC PPS / enable compression: %d\n",
-			dsi_ctx.accum_err);
-		panel_aa545_p_3_a0005_dsc_off(ctx);
-		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
-		regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
-		return dsi_ctx.accum_err;
-	}
-
 	return 0;
 }
 
-static int panel_aa545_p_3_a0005_dsc_unprepare(struct drm_panel *panel)
+static int boe_aa545_unprepare(struct drm_panel *panel)
 {
-	struct panel_aa545_p_3_a0005_dsc *ctx = to_panel_aa545_p_3_a0005_dsc(panel);
+	struct boe_aa545 *ctx = to_boe_aa545(panel);
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
-	ret = panel_aa545_p_3_a0005_dsc_off(ctx);
+	ret = boe_aa545_off(ctx);
 	if (ret < 0)
 		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
@@ -488,22 +486,19 @@ static int panel_aa545_p_3_a0005_dsc_unprepare(struct drm_panel *panel)
 	return 0;
 }
 
-static int panel_aa545_p_3_a0005_dsc_get_modes(struct drm_panel *panel,
+static int boe_aa545_get_modes(struct drm_panel *panel,
 					       struct drm_connector *connector)
 {
-	struct panel_aa545_p_3_a0005_dsc *ctx = to_panel_aa545_p_3_a0005_dsc(panel);
+	struct boe_aa545 *ctx = to_boe_aa545(panel);
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes); i++) {
-		const struct drm_display_mode *m = &panel_aa545_p_3_a0005_dsc_modes[i];
+	for (i = 0; i < ARRAY_SIZE(boe_aa545_modes); i++) {
+		const struct drm_display_mode *m = &boe_aa545_modes[i];
 		struct drm_display_mode *mode;
 
 		mode = drm_mode_duplicate(connector->dev, m);
 		if (!mode)
 			return -ENOMEM;
-
-		if (i == 0)
-			mode->type |= DRM_MODE_TYPE_PREFERRED;
 
 		drm_mode_set_name(mode);
 		drm_mode_probed_add(connector, mode);
@@ -514,16 +509,16 @@ static int panel_aa545_p_3_a0005_dsc_get_modes(struct drm_panel *panel,
 	connector->display_info.bpc = 10;
 	ctx->connector = connector;
 
-	return ARRAY_SIZE(panel_aa545_p_3_a0005_dsc_modes);
+	return ARRAY_SIZE(boe_aa545_modes);
 }
 
-static const struct drm_panel_funcs panel_aa545_p_3_a0005_dsc_panel_funcs = {
-	.prepare = panel_aa545_p_3_a0005_dsc_prepare,
-	.unprepare = panel_aa545_p_3_a0005_dsc_unprepare,
-	.get_modes = panel_aa545_p_3_a0005_dsc_get_modes,
+static const struct drm_panel_funcs boe_aa545_panel_funcs = {
+	.prepare = boe_aa545_prepare,
+	.unprepare = boe_aa545_unprepare,
+	.get_modes = boe_aa545_get_modes,
 };
 
-static int panel_aa545_p_3_a0005_dsc_bl_update_status(struct backlight_device *bl)
+static int boe_aa545_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness = backlight_get_brightness(bl);
@@ -540,9 +535,7 @@ static int panel_aa545_p_3_a0005_dsc_bl_update_status(struct backlight_device *b
 	return 0;
 }
 
-// TODO: Check if /sys/class/backlight/.../actual_brightness actually returns
-// correct values. If not, remove this function.
-static int panel_aa545_p_3_a0005_dsc_bl_get_brightness(struct backlight_device *bl)
+static int boe_aa545_bl_get_brightness(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness;
@@ -559,13 +552,13 @@ static int panel_aa545_p_3_a0005_dsc_bl_get_brightness(struct backlight_device *
 	return brightness;
 }
 
-static const struct backlight_ops panel_aa545_p_3_a0005_dsc_bl_ops = {
-	.update_status = panel_aa545_p_3_a0005_dsc_bl_update_status,
-	.get_brightness = panel_aa545_p_3_a0005_dsc_bl_get_brightness,
+static const struct backlight_ops boe_aa545_bl_ops = {
+	.update_status = boe_aa545_bl_update_status,
+	.get_brightness = boe_aa545_bl_get_brightness,
 };
 
 static struct backlight_device *
-panel_aa545_p_3_a0005_dsc_create_backlight(struct mipi_dsi_device *dsi)
+boe_aa545_create_backlight(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
 	const struct backlight_properties props = {
@@ -575,17 +568,17 @@ panel_aa545_p_3_a0005_dsc_create_backlight(struct mipi_dsi_device *dsi)
 	};
 
 	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
-					      &panel_aa545_p_3_a0005_dsc_bl_ops, &props);
+					      &boe_aa545_bl_ops, &props);
 }
 
-static int panel_aa545_p_3_a0005_dsc_probe(struct mipi_dsi_device *dsi)
+static int boe_aa545_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
-	struct panel_aa545_p_3_a0005_dsc *ctx;
+	struct boe_aa545 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct panel_aa545_p_3_a0005_dsc, panel,
-				   &panel_aa545_p_3_a0005_dsc_panel_funcs,
+	ctx = devm_drm_panel_alloc(dev, struct boe_aa545, panel,
+				   &boe_aa545_panel_funcs,
 				   DRM_MODE_CONNECTOR_DSI);
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
@@ -612,7 +605,7 @@ static int panel_aa545_p_3_a0005_dsc_probe(struct mipi_dsi_device *dsi)
 
 	ctx->panel.prepare_prev_first = true;
 
-	ctx->panel.backlight = panel_aa545_p_3_a0005_dsc_create_backlight(dsi);
+	ctx->panel.backlight = boe_aa545_create_backlight(dsi);
 	if (IS_ERR(ctx->panel.backlight))
 		return dev_err_probe(dev, PTR_ERR(ctx->panel.backlight),
 				     "Failed to create backlight\n");
@@ -656,9 +649,9 @@ static int panel_aa545_p_3_a0005_dsc_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
-static void panel_aa545_p_3_a0005_dsc_remove(struct mipi_dsi_device *dsi)
+static void boe_aa545_remove(struct mipi_dsi_device *dsi)
 {
-	struct panel_aa545_p_3_a0005_dsc *ctx = mipi_dsi_get_drvdata(dsi);
+	struct boe_aa545 *ctx = mipi_dsi_get_drvdata(dsi);
 	int ret;
 
 	ret = mipi_dsi_detach(dsi);
@@ -668,24 +661,21 @@ static void panel_aa545_p_3_a0005_dsc_remove(struct mipi_dsi_device *dsi)
 	drm_panel_remove(&ctx->panel);
 }
 
-static const struct of_device_id panel_aa545_p_3_a0005_dsc_of_match[] = {
-	{ .compatible = "panel,aa545-p-3-a0005-dsc" },
-	{ .compatible = "oplus,ac545-p-3-a0005-dsc" },
-	{ .compatible = "oplus,aa545-p-3-a0005-dsc" },
+static const struct of_device_id boe_aa545_of_match[] = {
+	{ .compatible = "boe,aa545-p-3-a0005" },
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, panel_aa545_p_3_a0005_dsc_of_match);
+MODULE_DEVICE_TABLE(of, boe_aa545_of_match);
 
-static struct mipi_dsi_driver panel_aa545_p_3_a0005_dsc_driver = {
-	.probe = panel_aa545_p_3_a0005_dsc_probe,
-	.remove = panel_aa545_p_3_a0005_dsc_remove,
+static struct mipi_dsi_driver boe_aa545_driver = {
+	.probe = boe_aa545_probe,
+	.remove = boe_aa545_remove,
 	.driver = {
-		.name = "panel-panel-aa545-p-3-a0005-dsc",
-		.of_match_table = panel_aa545_p_3_a0005_dsc_of_match,
+		.name = "panel-boe-aa545",
+		.of_match_table = boe_aa545_of_match,
 	},
 };
-module_mipi_dsi_driver(panel_aa545_p_3_a0005_dsc_driver);
+module_mipi_dsi_driver(boe_aa545_driver);
 
-MODULE_AUTHOR("linux-mdss-dsi-panel-driver-generator <fix@me>"); // FIXME
-MODULE_DESCRIPTION("DRM driver for AA545 P 3 A0005 dsc cmd mode panel");
+MODULE_DESCRIPTION("BOE AA545 P 3 A0005 AMOLED panel driver");
 MODULE_LICENSE("GPL");

@@ -35,6 +35,7 @@
 
 #define CSID_TOP_IRQ_STATUS		0x7C
 #define		 TOP_IRQ_STATUS_RESET_DONE	BIT(0)
+#define		 TOP_IRQ_BUF_DONE		BIT(13)
 
 #define CSID_TOP_IRQ_MASK		0x80
 #define CSID_TOP_IRQ_CLEAR		0x84
@@ -66,6 +67,7 @@
 #define		CSI2_RX_CFG0_VC_MODE		3
 #define		CSI2_RX_CFG0_DL0_INPUT_SEL	4
 #define		CSI2_RX_CFG0_PHY_NUM_SEL	20
+#define		CSI2_RX_CFG0_CPHY_MODE		BIT(24)
 #define		CSI2_RX_CFG0_TPG_MUX_EN		BIT(27)
 #define		CSI2_RX_CFG0_TPG_MUX_SEL	GENMASK(29, 28)
 
@@ -126,6 +128,8 @@ static void __csid_configure_rx(struct csid_device *csid,
 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
 	}
 
+	if (phy->is_cphy)
+		val |= CSI2_RX_CFG0_CPHY_MODE;
 	writel(val, csid->base + CSID_CSI2_RX_CFG0);
 
 	val = CSI2_RX_CFG1_ECC_CORRECTION_EN;
@@ -186,8 +190,8 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 	val = RDI_CFG0_TIMESTAMP_EN;
 	val |= RDI_CFG0_TIMESTAMP_STB_SEL;
-	/* note: for non-RDI path, this should be format->decode_format */
-	val |= DECODE_FORMAT_PAYLOAD_ONLY << RDI_CFG0_DECODE_FORMAT;
+	/* Gen3 decodes the input before repacking it into MIPI RAW output. */
+	val |= format->decode_format << RDI_CFG0_DECODE_FORMAT;
 	val |= vc << RDI_CFG0_VC;
 	val |= format->data_type << RDI_CFG0_DT;
 	val |= dt_id << RDI_CFG0_DT_ID;
@@ -196,10 +200,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 	val = RDI_CFG1_PACKING_FORMAT_MIPI;
 	val |= RDI_CFG1_PIX_STORE;
-	val |= RDI_CFG1_DROP_H_EN;
-	val |= RDI_CFG1_DROP_V_EN;
-	val |= RDI_CFG1_CROP_H_EN;
-	val |= RDI_CFG1_CROP_V_EN;
+	/* Pass the complete frame; no crop/drop windows are programmed. */
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
 
@@ -259,7 +260,7 @@ static void csid_subdev_reg_update(struct csid_device *csid, int port_id, bool c
 static irqreturn_t csid_isr(int irq, void *dev)
 {
 	struct csid_device *csid = dev;
-	u32 val, buf_done_val;
+	u32 val, buf_done_val, rx_val;
 	u8 reset_done;
 	int i;
 
@@ -267,11 +268,14 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	writel(val, csid->base + CSID_TOP_IRQ_CLEAR);
 	reset_done = val & TOP_IRQ_STATUS_RESET_DONE;
 
-	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
-	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+	rx_val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
+	writel(rx_val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
 
 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
 	writel(buf_done_val, csid->base + CSID_BUF_DONE_IRQ_CLEAR);
+
+	dev_dbg(csid->camss->dev, "CSID%d ISR: top=0x%08x rx=0x%08x buf_done=0x%08x en_vc=0x%x\n",
+		 csid->id, val, rx_val, buf_done_val, csid->phy.en_vc);
 
 	/* Read and clear IRQ status for each enabled RDI channel */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
@@ -318,7 +322,8 @@ static int csid_reset(struct csid_device *csid)
 
 	writel(1, csid->base + CSID_TOP_IRQ_CLEAR);
 	writel(1, csid->base + CSID_IRQ_CMD);
-	writel(1, csid->base + CSID_TOP_IRQ_MASK);
+	writel(TOP_IRQ_STATUS_RESET_DONE | TOP_IRQ_BUF_DONE,
+	       csid->base + CSID_TOP_IRQ_MASK);
 
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {

@@ -3,6 +3,7 @@
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/clock/qcom,sm8650-camcc.h>
 #define PMK8550VE_SID 8
 #include "sm8650.dtsi"
 #include "pm8010.dtsi"
@@ -89,7 +90,7 @@
 
     chosen {
         stdout-path = "serial0:115200n8";
-        bootargs = "console=tty0 root=PARTUUID=4760be34-a36a-4316-8cbd-f65bd4a7cf85 rw";
+        bootargs = "console=tty0 root=PARTUUID=4760be34-a36a-4316-8cbd-f65bd4a7cf85 rootfstype=f2fs rootflags=atgc,compress_algorithm=zstd:3,compress_chksum rootwait rw drm_kms_helper.fbdev_emulation=0 no_console_suspend pm_print_times=1 pm_debug_messages pm_async=0";
     };
     
     /*
@@ -121,6 +122,10 @@
         #address-cells = <1>;
         #size-cells = <0>;
         orientation-gpios = <&tlmm 29 GPIO_ACTIVE_HIGH>;
+		io-channels = <&pmk8550_vadc ADC5_GEN3_AMUX1_THM_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX4_THM_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX3_GPIO_100K_PU(7)>;
+		io-channel-names = "battery-connector", "usb-connector", "subboard";
 
 	connector@0 {
 		compatible = "usb-c-connector";
@@ -150,6 +155,13 @@
 				};
 			};
 
+			port@2 {
+				reg = <2>;
+
+				pmic_glink_sbu: endpoint {
+					remote-endpoint = <&wcd_usbss_sbu>;
+				};
+			};
 		};
 	};
     };
@@ -421,6 +433,33 @@
 	remote-endpoint = <&redriver_ss_in>;
 };
 
+&i2c3 {
+	status = "okay";
+
+	typec-mux@e {
+		compatible = "qcom,wcd9395-usbss", "qcom,wcd9390-usbss";
+		reg = <0xe>;
+
+		vdd-supply = <&vreg_l15b_1p8>;
+
+		mode-switch;
+		orientation-switch;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				wcd_usbss_sbu: endpoint {
+					remote-endpoint = <&pmic_glink_sbu>;
+				};
+			};
+		};
+	};
+};
+
 &i2c6 {
 	status = "okay";
 
@@ -457,6 +496,10 @@
 	};
 };
 
+&mdss_dp0 {
+	status = "okay";
+};
+
 &ufs_mem_hc {
 	reset-gpios = <&tlmm 210 GPIO_ACTIVE_LOW>;
 
@@ -483,6 +526,11 @@
 	firmware-name = "qcom/sm8650/gen70900_zap.mbn";
 };
 
+&iris {
+	firmware-name = "qcom/sm8650/oneplus/waffle/vpu33_4v.mbn";
+	status = "okay";
+};
+
 &mdss {
 	status = "okay";
 };
@@ -493,7 +541,7 @@
 	status = "okay";
 
 	panel@0 {
-		compatible = "panel,aa545-p-3-a0005-dsc";
+		compatible = "boe,aa545-p-3-a0005";
 		
 		reg = <0>;
 
@@ -546,6 +594,21 @@
 
 		pinctrl-0 = <&ts_int_default>, <&ts_reset_default>;
 		pinctrl-names = "default";
+	};
+};
+
+&spi11 {
+	pinctrl-0 = <&ir_spi_default>;
+	pinctrl-1 = <&ir_spi_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	irled@0 {
+		compatible = "ir-spi-led";
+		reg = <0>;
+		spi-max-frequency = <5000000>;
+		duty-cycle = /bits/ 8 <30>;
+		power-supply = <&vreg_l9b_3p1>;
 	};
 };
 
@@ -614,6 +677,21 @@
 
 &tlmm {
     gpio-reserved-ranges = <36 4>, <74 1>;
+
+	ir_spi_default: ir-spi-default-state {
+		pins = "gpio13";
+		function = "qup2_se3";
+		drive-strength = <6>;
+		bias-disable;
+	};
+
+	ir_spi_sleep: ir-spi-sleep-state {
+		pins = "gpio13";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-low;
+	};
     
     bt_default: bt-default-state {
 		bt-en-pins {
@@ -723,6 +801,32 @@
 		bias-pull-up;
 		power-source = <1>;
     };
+};
+
+&pmk8550_vadc {
+	channel@744 {
+		reg = <ADC5_GEN3_AMUX1_THM_100K_PU(7)>;
+		label = "battery_connector_temp";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+	};
+
+	channel@747 {
+		reg = <ADC5_GEN3_AMUX4_THM_100K_PU(7)>;
+		label = "usb_connector_temp";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+	};
+
+	channel@74c {
+		reg = <ADC5_GEN3_AMUX3_GPIO_100K_PU(7)>;
+		label = "subboard_temp";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+	};
 };
 
 &pm8550b_gpios {
@@ -893,6 +997,13 @@
 			regulator-allow-set-load;
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
 						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l9b_3p1: ldo9 {
+			regulator-name = "vreg_l9b_3p1";
+			regulator-min-microvolt = <3104000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
 		vreg_l11b_1p2: ldo11 {
@@ -1190,10 +1301,10 @@
 						   RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l2m_1p056: ldo2 {
-			regulator-name = "vreg_l2m_1p056";
-			regulator-min-microvolt = <1056000>;
-			regulator-max-microvolt = <1056000>;
+		vreg_l2m_1p1: ldo2 {
+			regulator-name = "vreg_l2m_1p1";
+			regulator-min-microvolt = <1100000>;
+			regulator-max-microvolt = <1100000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 			regulator-allow-set-load;
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
@@ -1207,31 +1318,31 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l4m_2p8: ldo4 {
-			regulator-name = "vreg_l4m_2p8";
-			regulator-min-microvolt = <2800000>;
-			regulator-max-microvolt = <2800000>;
+		vreg_l4m_2p9: ldo4 {
+			regulator-name = "vreg_l4m_2p9";
+			regulator-min-microvolt = <2900000>;
+			regulator-max-microvolt = <2900000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l5m_1p8: ldo5 {
-			regulator-name = "vreg_l5m_1p8";
+		vreg_l5m_3p0: ldo5 {
+			regulator-name = "vreg_l5m_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6m_1p8: ldo6 {
+			regulator-name = "vreg_l6m_1p8";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l6m_2p8: ldo6 {
-			regulator-name = "vreg_l6m_2p8";
-			regulator-min-microvolt = <2800000>;
-			regulator-max-microvolt = <2800000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		vreg_l7m_2p96: ldo7 {
-			regulator-name = "vreg_l7m_2p96";
-			regulator-min-microvolt = <2960000>;
-			regulator-max-microvolt = <2960000>;
+		vreg_l7m_3p0: ldo7 {
+			regulator-name = "vreg_l7m_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
@@ -1259,7 +1370,7 @@
 		vreg_l2n_1p056: ldo2 {
 			regulator-name = "vreg_l2n_1p056";
 			regulator-min-microvolt = <1056000>;
-			regulator-max-microvolt = <1056000>;
+			regulator-max-microvolt = <1100000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 			regulator-allow-set-load;
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
@@ -1273,10 +1384,10 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l4n_1p8: ldo4 {
-			regulator-name = "vreg_l4n_1p8";
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
+		vreg_l4n_2p8: ldo4 {
+			regulator-name = "vreg_l4n_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -1287,17 +1398,17 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l6n_2p8: ldo6 {
-			regulator-name = "vreg_l6n_2p8";
-			regulator-min-microvolt = <2800000>;
-			regulator-max-microvolt = <2800000>;
+		vreg_l6n_1p8: ldo6 {
+			regulator-name = "vreg_l6n_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l7n_3p3: ldo7 {
-			regulator-name = "vreg_l7n_3p3";
-			regulator-min-microvolt = <3304000>;
-			regulator-max-microvolt = <3304000>;
+		vreg_l7n_2p8: ldo7 {
+			regulator-name = "vreg_l7n_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
@@ -1360,4 +1471,222 @@
 	};
 };
 
+&camss {
+	vdd-csiphy01-0p9-supply = <&vreg_l2i_0p88>;
+	vdd-csiphy01-1p2-supply = <&vreg_l3i_1p2>;
+	vdd-csiphy24-0p9-supply = <&vreg_l2i_0p88>;
+	vdd-csiphy24-1p2-supply = <&vreg_l3i_1p2>;
 
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+
+			csiphy0_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				remote-endpoint = <&ov64b_ep>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+
+			csiphy1_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				remote-endpoint = <&lyt808_ep>;
+			};
+		};
+
+		port@2 {
+			reg = <2>;
+
+			csiphy2_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				remote-endpoint = <&imx581_ep>;
+			};
+		};
+
+		port@4 {
+			reg = <4>;
+
+			csiphy4_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&imx615_ep>;
+			};
+		};
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c0 {
+	clock-frequency = <400000>;
+
+	camera@1a {
+		compatible = "sony,imx581";
+		reg = <0x1a>;
+
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 14 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam2_default>;
+
+		avdd-supply = <&vreg_l4m_2p9>;
+		dvdd-supply = <&vreg_l2m_1p1>;
+		dovdd-supply = <&vreg_l3n_1p8>;
+		auxvdd-supply = <&vreg_l6n_1p8>;
+		afvdd-supply = <&vreg_l7n_2p8>;
+
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			imx581_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				link-frequencies = /bits/ 64 <1422400000>;
+				remote-endpoint = <&csiphy2_ep>;
+			};
+		};
+	};
+};
+
+&cci0_i2c1 {
+	clock-frequency = <400000>;
+
+	camera@1a {
+		compatible = "sony,lyt808";
+		reg = <0x1a>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 82 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam1_default>;
+
+		dovdd-supply = <&vreg_l3n_1p8>;
+		auxvdd-supply = <&vreg_l3m_2p8>;
+		avdd-supply = <&vreg_l6m_1p8>;
+		dvdd-supply = <&vreg_l1m_1p1>;
+		afvdd-supply = <&vreg_l7m_3p0>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		port {
+			lyt808_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				link-frequencies = /bits/ 64 <2412800000>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	pinctrl-0 = <&cci1_0_default>;
+	pinctrl-1 = <&cci1_0_sleep>;
+	status = "okay";
+};
+
+&cci1_i2c0 {
+	clock-frequency = <400000>;
+
+	camera@10 {
+		compatible = "ovti,ov64b";
+		reg = <0x10>;
+
+		clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam3_default>;
+
+		dovdd-supply = <&vreg_l3n_1p8>;
+		avdd-supply = <&vreg_l4n_2p8>;
+		dvdd-supply = <&vreg_l1n_1p1>;
+		auxvdd-supply = <&vreg_l5n_2p8>;
+		afvdd-supply = <&vreg_l7n_2p8>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		port {
+			ov64b_ep: endpoint {
+				bus-type = <1>;
+				data-lanes = <0 1 2>;
+				link-frequencies = /bits/ 64 <1050000000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+};
+
+&i2c9 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	camera@10 {
+		compatible = "sony,imx615";
+		reg = <0x10>;
+
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam4_default>;
+
+		avdd-supply = <&vreg_l4n_2p8>;
+		dvdd-supply = <&vreg_l2n_1p056>;
+		dovdd-supply = <&vreg_l3n_1p8>;
+
+		orientation = <0>;
+		rotation = <90>;
+
+		port {
+			imx615_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				link-frequencies = /bits/ 64 <455000000>;
+				remote-endpoint = <&csiphy4_ep>;
+			};
+		};
+	};
+
+	eeprom@54 {
+		compatible = "atmel,24c32";
+		reg = <0x54>;
+		vcc-supply = <&vreg_l3n_1p8>;
+	};
+};

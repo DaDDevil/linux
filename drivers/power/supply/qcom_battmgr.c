@@ -5,18 +5,23 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 #include <linux/auxiliary_bus.h>
+#include <linux/debugfs.h>
 #include <linux/devm-helpers.h>
+#include <linux/iio/consumer.h>
+#include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/math.h>
 #include <linux/units.h>
+#include <linux/usb/pd.h>
 
 #define BATTMGR_CHEMISTRY_LEN	4
 #define BATTMGR_STRING_LEN	128
@@ -43,6 +48,7 @@ enum qcom_battmgr_variant {
 #define NOTIF_PLUGIN_IRQ		0x57
 #define NOTIF_APSD_DONE			0x58
 #define NOTIF_CP_MOS_DISABLE		0x64
+#define NOTIF_PD_SOURCE_CAPS		0x79
 #define NOTIF_POWER_ROLE_STATUS		0x7d
 #define NOTIF_PD_CONNECT_HARD_RESET	0x7f
 #define NOTIF_BAT_STATUS		0x80
@@ -82,6 +88,7 @@ enum qcom_battmgr_variant {
 #define BATT_POWER_NOW			22
 #define BATT_POWER_AVG			23
 #define BATT_CHG_CTRL_EN		24
+#define OPLUS_BATT_SET_PDO		25
 #define BATT_CHG_CTRL_START_THR		25
 #define BATT_CHG_CTRL_END_THR		26
 
@@ -101,7 +108,51 @@ enum qcom_battmgr_variant {
 /* OnePlus SM8650 uses the regular USB property namespace (not SOCCP). */
 #define OPLUS_USB_OTG_AP_ENABLE		17
 #define OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE	24
+#define OPLUS_USB_GET_PPS_STATUS		33
+#define OPLUS_USB_SET_PPS_VOLT		34
+#define OPLUS_USB_SET_PPS_CURR		35
+#define OPLUS_USB_PPS_MOS_CTRL		39
 #define OPLUS_USB_OTG_BOOST_CURRENT	64
+
+#define OPLUS_OEM_READ_BUFFER		0x10000
+#define OPLUS_PPS_READ_BUFFER		0x10004
+#define OPLUS_BUFFER_WORDS		128
+/* Ordinary buck-path limits are separate from supervised BYPASS limits. */
+#define OPLUS_PPS_MAX_VOLT_MV		9000
+#define OPLUS_PPS_MAX_CURR_MA		2000
+#define OPLUS_DIRECT_MAX_VOLT_MV		11000
+#define OPLUS_DIRECT_MAX_CURR_MA		3000
+#define OPLUS_DIRECT_MAX_CELL_MV		4400
+#define OPLUS_DIRECT_LEASE		(15 * HZ)
+
+enum qcom_battmgr_oplus_direct_state {
+	OPLUS_DIRECT_IDLE,
+	OPLUS_DIRECT_PRECHARGE,
+	OPLUS_DIRECT_RUNNING,
+	OPLUS_DIRECT_STOPPING,
+};
+
+enum qcom_battmgr_oplus_thermistor {
+	OPLUS_THERM_BATTERY_CONNECTOR,
+	OPLUS_THERM_USB_CONNECTOR,
+	OPLUS_THERM_SUBBOARD,
+	OPLUS_THERM_COUNT,
+};
+
+static const char * const qcom_battmgr_oplus_thermistor_names[] = {
+	"battery-connector", "usb-connector", "subboard",
+};
+
+struct qcom_battmgr_oplus_buffer_request {
+	struct pmic_glink_hdr hdr;
+	__le32 data_size;
+};
+
+struct qcom_battmgr_oplus_buffer_resp {
+	struct pmic_glink_hdr hdr;
+	__le32 data[OPLUS_BUFFER_WORDS];
+	__le32 data_size;
+};
 
 #define BATTMGR_WLS_PROPERTY_GET	0x34
 #define BATTMGR_WLS_PROPERTY_SET	0x35
@@ -325,6 +376,35 @@ struct qcom_battmgr_wireless {
 
 struct qcom_battmgr_oplus {
 	bool otg_state;
+	struct iio_channel *thermistors[OPLUS_THERM_COUNT];
+	enum qcom_battmgr_oplus_direct_state direct_state;
+	bool direct_abort;
+	bool direct_shutdown;
+	bool direct_mos_pending;
+	bool direct_thermal_derated;
+	bool direct_connector_derated;
+	unsigned long direct_deadline;
+	unsigned long direct_start_deadline;
+	unsigned long direct_mos_deadline;
+	int direct_error;
+	int direct_temperatures[OPLUS_THERM_COUNT];
+	u32 direct_target_mv;
+	u32 direct_input_mv;
+	u32 direct_input_ma;
+	u32 direct_low_current_count;
+	u32 direct_high_current_count;
+	u32 direct_cell_current_ma;
+	u32 mos_state;
+	u32 oem_data[OPLUS_BUFFER_WORDS];
+	u32 oem_words;
+	u32 pps_pdos[PDO_MAX_OBJECTS];
+	u32 pps_imax;
+	u32 pps_vmax;
+	u32 pps_status;
+	u32 pps_voltage_mv;
+	u32 pps_current_ma;
+	u32 charge_current;
+	u32 charge_current_max;
 };
 
 struct qcom_battmgr {
@@ -342,6 +422,10 @@ struct qcom_battmgr {
 
 	int error;
 	struct completion ack;
+	u32 request_opcode;
+	u32 request_property;
+	bool request_has_property;
+	bool request_pending;
 
 	bool service_up;
 
@@ -351,11 +435,14 @@ struct qcom_battmgr {
 	struct qcom_battmgr_usb usb;
 	struct qcom_battmgr_wireless wireless;
 	struct qcom_battmgr_oplus oplus;
+	u32 usb_type_property;
 	bool status_follows_power_online;
 	bool oplus_otg_control;
 
 	struct work_struct enable_work;
 	struct work_struct oplus_otg_work;
+	struct delayed_work oplus_direct_work;
+	struct wakeup_source *oplus_direct_ws;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -366,18 +453,34 @@ struct qcom_battmgr {
 
 static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t len)
 {
+	const struct pmic_glink_hdr *hdr = data;
+	const struct qcom_battmgr_property_request *property_request = data;
+	u32 opcode = le32_to_cpu(hdr->opcode);
 	unsigned long left;
 	int ret;
 
 	reinit_completion(&battmgr->ack);
 
 	battmgr->error = 0;
+	battmgr->request_opcode = opcode;
+	battmgr->request_has_property =
+		len == sizeof(*property_request) &&
+		(opcode == BATTMGR_BAT_PROPERTY_GET || opcode == BATTMGR_BAT_PROPERTY_SET ||
+		 opcode == BATTMGR_USB_PROPERTY_GET || opcode == BATTMGR_USB_PROPERTY_SET ||
+		 opcode == BATTMGR_WLS_PROPERTY_GET);
+	if (battmgr->request_has_property)
+		battmgr->request_property = le32_to_cpu(property_request->property);
+	/* Publish the expected reply before the receive callback can inspect it. */
+	smp_store_release(&battmgr->request_pending, true);
 
 	ret = pmic_glink_send(battmgr->client, data, len);
-	if (ret < 0)
+	if (ret < 0) {
+		WRITE_ONCE(battmgr->request_pending, false);
 		return ret;
+	}
 
 	left = wait_for_completion_timeout(&battmgr->ack, HZ);
+	WRITE_ONCE(battmgr->request_pending, false);
 	if (!left)
 		return -ETIMEDOUT;
 
@@ -1051,12 +1154,923 @@ static int qcom_battmgr_usb_sm8350_update(struct qcom_battmgr *battmgr,
 		return -EINVAL;
 
 	prop = sm8350_usb_prop_map[psp];
+	if (psp == POWER_SUPPLY_PROP_USB_TYPE)
+		prop = battmgr->usb_type_property;
 
 	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, prop, 0);
 	mutex_unlock(&battmgr->lock);
 
 	return ret;
+}
+
+/* Caller holds battmgr->lock, including across both PPS property writes. */
+static int qcom_battmgr_oplus_pps_caps(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus_buffer_request request = {
+		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+		.hdr.opcode = cpu_to_le32(OPLUS_PPS_READ_BUFFER),
+		.data_size = cpu_to_le32(OPLUS_BUFFER_WORDS * sizeof(__le32)),
+	};
+	int ret;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_ONLINE, 0);
+	if (ret)
+		return ret;
+	/* Buck input suspend reports offline even while a PPS source is attached. */
+	if (!battmgr->usb.online && battmgr->oplus.direct_state == OPLUS_DIRECT_IDLE)
+		return -ENODATA;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_ADAP_TYPE, 0);
+	if (ret)
+		return ret;
+	if (battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD &&
+	    battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD_DRP &&
+	    battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD_PPS)
+		return -EOPNOTSUPP;
+
+	memset(battmgr->oplus.pps_pdos, 0, sizeof(battmgr->oplus.pps_pdos));
+	return qcom_battmgr_request(battmgr, &request, sizeof(request));
+}
+
+static bool qcom_battmgr_oplus_pps_supported(struct qcom_battmgr *battmgr,
+					     u32 voltage_mv, u32 current_ma)
+{
+	u32 pdo;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(battmgr->oplus.pps_pdos); i++) {
+		pdo = battmgr->oplus.pps_pdos[i];
+		if (pdo_type(pdo) != PDO_TYPE_APDO || pdo_apdo_type(pdo) != APDO_TYPE_PPS)
+			continue;
+		if (voltage_mv >= pdo_pps_apdo_min_voltage(pdo) &&
+		    voltage_mv <= pdo_pps_apdo_max_voltage(pdo) &&
+		    current_ma <= pdo_pps_apdo_max_current(pdo))
+			return true;
+	}
+
+	return false;
+}
+
+static int qcom_battmgr_usb_set_property(struct power_supply *psy,
+					 enum power_supply_property psp,
+					 const union power_supply_propval *val)
+{
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+	u32 voltage_mv, current_ma;
+	int ret;
+
+	if (!battmgr->oplus_otg_control)
+		return -EOPNOTSUPP;
+	if (!READ_ONCE(battmgr->service_up))
+		return -EAGAIN;
+	if (val->intval <= 0 || val->intval % 1000)
+		return -EINVAL;
+	if (psp != POWER_SUPPLY_PROP_VOLTAGE_NOW && psp != POWER_SUPPLY_PROP_CURRENT_NOW)
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	if (battmgr->oplus.direct_state != OPLUS_DIRECT_IDLE) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	ret = qcom_battmgr_oplus_pps_caps(battmgr);
+	if (ret)
+		goto out_unlock;
+	if (battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD_PPS) {
+		ret = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	voltage_mv = battmgr->oplus.pps_voltage_mv;
+	current_ma = battmgr->oplus.pps_current_ma;
+	if (psp == POWER_SUPPLY_PROP_VOLTAGE_NOW)
+		voltage_mv = val->intval / 1000;
+	else
+		current_ma = val->intval / 1000;
+
+	if (voltage_mv < 5000 || voltage_mv > OPLUS_PPS_MAX_VOLT_MV ||
+	    current_ma > OPLUS_PPS_MAX_CURR_MA || voltage_mv % 20 || current_ma % 50 ||
+	    !qcom_battmgr_oplus_pps_supported(battmgr, voltage_mv, current_ma)) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_INPUT_CURR_LIMIT, 0);
+	if (ret)
+		goto out_unlock;
+	if (current_ma * 1000 > battmgr->usb.current_limit) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    OPLUS_USB_SET_PPS_VOLT, voltage_mv);
+	if (ret)
+		goto out_unlock;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    OPLUS_USB_SET_PPS_CURR, current_ma);
+	if (ret) {
+		/* Restore the last accepted request if the pair was interrupted. */
+		qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					      OPLUS_USB_SET_PPS_VOLT,
+					      battmgr->oplus.pps_voltage_mv);
+		qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					      OPLUS_USB_SET_PPS_CURR,
+					      battmgr->oplus.pps_current_ma);
+		goto out_unlock;
+	}
+
+	battmgr->oplus.pps_voltage_mv = voltage_mv;
+	battmgr->oplus.pps_current_ma = current_ma;
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	if (!ret)
+		power_supply_changed(psy);
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+
+static int qcom_battmgr_usb_property_is_writeable(struct power_supply *psy,
+						  enum power_supply_property psp)
+{
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+
+	return battmgr->oplus_otg_control &&
+	       (psp == POWER_SUPPLY_PROP_VOLTAGE_NOW || psp == POWER_SUPPLY_PROP_CURRENT_NOW);
+}
+
+static int qcom_battmgr_oplus_pps_show(struct seq_file *s, void *unused)
+{
+	struct qcom_battmgr *battmgr = s->private;
+	u32 pdo, status;
+	int ret, i;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return -EAGAIN;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_oplus_pps_caps(battmgr);
+	if (ret)
+		goto out_unlock;
+
+	seq_printf(s, "firmware_imax=%u firmware_vmax=%u\n",
+		   battmgr->oplus.pps_imax, battmgr->oplus.pps_vmax);
+	for (i = 0; i < ARRAY_SIZE(battmgr->oplus.pps_pdos); i++) {
+		pdo = battmgr->oplus.pps_pdos[i];
+		seq_printf(s, "pdo[%d]=%#010x", i, pdo);
+		if (pdo_type(pdo) == PDO_TYPE_APDO && pdo_apdo_type(pdo) == APDO_TYPE_PPS)
+			seq_printf(s, " PPS %u-%u mV %u mA",
+				   pdo_pps_apdo_min_voltage(pdo),
+				   pdo_pps_apdo_max_voltage(pdo), pdo_pps_apdo_max_current(pdo));
+		seq_putc(s, '\n');
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    OPLUS_USB_GET_PPS_STATUS, 0);
+	if (ret) {
+		seq_printf(s, "status_error=%d\n", ret);
+		ret = 0;
+	} else {
+		status = battmgr->oplus.pps_status;
+		if (!status)
+			seq_puts(s, "status=unavailable (firmware returned zero)\n");
+		else
+			seq_printf(s, "status=%#010x voltage=%u mV current=%u mA\n",
+				   status, (status & 0xffff) * 20, ((status >> 16) & 0xff) * 50);
+	}
+	seq_printf(s, "last_request=%u mV %u mA\n", battmgr->oplus.pps_voltage_mv,
+		   battmgr->oplus.pps_current_ma);
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+					    BATT_CHG_CTRL_LIM, 0);
+	if (ret) {
+		seq_printf(s, "charge_current_error=%d\n", ret);
+		ret = 0;
+	} else {
+		seq_printf(s, "charge_current=%u uA\n", battmgr->oplus.charge_current);
+	}
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+					    BATT_CHG_CTRL_LIM_MAX, 0);
+	if (ret) {
+		seq_printf(s, "charge_current_max_error=%d\n", ret);
+		ret = 0;
+	} else {
+		seq_printf(s, "charge_current_max=%u uA\n", battmgr->oplus.charge_current_max);
+	}
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_oplus_pps);
+
+static int qcom_battmgr_oplus_oem_read(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus_buffer_request request = {
+		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+		.hdr.opcode = cpu_to_le32(OPLUS_OEM_READ_BUFFER),
+		.data_size = cpu_to_le32(OPLUS_BUFFER_WORDS * sizeof(__le32)),
+	};
+
+	battmgr->oplus.oem_words = 0;
+	memset(battmgr->oplus.oem_data, 0, sizeof(battmgr->oplus.oem_data));
+	return qcom_battmgr_request(battmgr, &request, sizeof(request));
+}
+
+static int qcom_battmgr_oplus_charger_show(struct seq_file *s, void *unused)
+{
+	struct qcom_battmgr *battmgr = s->private;
+	u32 *data = battmgr->oplus.oem_data;
+	int ret, i;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return -EAGAIN;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_oplus_oem_read(battmgr);
+	if (ret)
+		goto out_unlock;
+
+	seq_printf(s, "temperature=%d deciC current=%d uA voltage=%u uV soc=%u centipercent\n",
+		   (s32)data[0], (s32)data[1], data[2], data[3]);
+	seq_printf(s, "remaining=%u full=%u cycle_count=%u soh=%u suspend=%u\n",
+		   data[4], data[6], data[7], data[8], data[9]);
+	for (i = 0; i < battmgr->oplus.oem_words; i++)
+		seq_printf(s, "oem[%d]=%#010x\n", i, data[i]);
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_oplus_charger);
+
+static int qcom_battmgr_oplus_read_temperatures(struct qcom_battmgr *battmgr,
+						int *temperatures)
+{
+	int ret, i;
+
+	if (!IS_REACHABLE(CONFIG_IIO))
+		return -EOPNOTSUPP;
+	for (i = 0; i < OPLUS_THERM_COUNT; i++) {
+		if (!battmgr->oplus.thermistors[i])
+			return -ENODEV;
+		ret = iio_read_channel_processed(battmgr->oplus.thermistors[i],
+						 &temperatures[i]);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+static int qcom_battmgr_oplus_thermal_show(struct seq_file *s, void *unused)
+{
+	struct qcom_battmgr *battmgr = s->private;
+	int temperatures[OPLUS_THERM_COUNT];
+	int ret, i;
+
+	ret = qcom_battmgr_oplus_read_temperatures(battmgr, temperatures);
+	if (ret)
+		return ret;
+	for (i = 0; i < OPLUS_THERM_COUNT; i++)
+		seq_printf(s, "%s=%d mC\n", qcom_battmgr_oplus_thermistor_names[i],
+			   temperatures[i]);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_oplus_thermal);
+
+static int qcom_battmgr_oplus_mos_show(struct seq_file *s, void *unused)
+{
+	struct qcom_battmgr *battmgr = s->private;
+	int ret;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return -EAGAIN;
+	mutex_lock(&battmgr->lock);
+	battmgr->oplus.mos_state = U32_MAX;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    OPLUS_USB_PPS_MOS_CTRL, 0);
+	if (!ret)
+		seq_printf(s, "%u\n", battmgr->oplus.mos_state);
+	mutex_unlock(&battmgr->lock);
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_oplus_mos);
+
+/* Explicit bring-up controls, limited to the OEM ordinary-PD operating point. */
+static int qcom_battmgr_oplus_charger_test_set(struct qcom_battmgr *battmgr,
+					       u32 opcode, u32 property, u32 value)
+{
+	u32 *data = battmgr->oplus.oem_data;
+	bool supported = false;
+	u32 pdo;
+	int ret, i;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return -EAGAIN;
+
+	mutex_lock(&battmgr->lock);
+	/* Keep the conservative-current rollback available even with invalid telemetry. */
+	if (battmgr->oplus.direct_state != OPLUS_DIRECT_IDLE) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	if ((property == BATT_CHG_CTRL_LIM || property == USB_INPUT_CURR_LIMIT) &&
+	    value <= 500000)
+		goto write_property;
+	ret = qcom_battmgr_oplus_pps_caps(battmgr);
+	if (ret)
+		goto out_unlock;
+	if (property != OPLUS_BATT_SET_PDO || value != 5000) {
+		ret = qcom_battmgr_oplus_oem_read(battmgr);
+		if (ret)
+			goto out_unlock;
+		/* Do not raise limits using the generic, potentially stale gauge data. */
+		if ((s32)data[0] < 100 || (s32)data[0] > 400 ||
+		    data[2] < 3000000 || data[2] > 4200000) {
+			ret = -EPERM;
+			goto out_unlock;
+		}
+	}
+
+	if (property == OPLUS_BATT_SET_PDO) {
+		for (i = 0; i < ARRAY_SIZE(battmgr->oplus.pps_pdos); i++) {
+			pdo = battmgr->oplus.pps_pdos[i];
+			if (pdo_type(pdo) == PDO_TYPE_FIXED &&
+			    pdo_fixed_voltage(pdo) == value && pdo_max_current(pdo) >= 500)
+				supported = true;
+		}
+		if (!supported) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+	}
+	if (opcode == BATTMGR_USB_PROPERTY_SET && property == USB_INPUT_CURR_LIMIT) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+						    USB_VOLT_MAX, 0);
+		if (ret)
+			goto out_unlock;
+		for (i = 0; i < ARRAY_SIZE(battmgr->oplus.pps_pdos); i++) {
+			pdo = battmgr->oplus.pps_pdos[i];
+			if (pdo_type(pdo) == PDO_TYPE_FIXED &&
+			    pdo_fixed_voltage(pdo) * 1000 == battmgr->usb.voltage_max &&
+			    pdo_max_current(pdo) * 1000 >= value)
+				supported = true;
+		}
+		if (battmgr->usb.usb_type == POWER_SUPPLY_USB_TYPE_PD_PPS &&
+		    qcom_battmgr_oplus_pps_supported(battmgr,
+						     battmgr->usb.voltage_max / 1000, value / 1000))
+			supported = true;
+		if (!supported) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+	}
+	if (property == BATT_CHG_CTRL_LIM) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+						    BATT_CHG_CTRL_LIM_MAX, 0);
+		if (ret)
+			goto out_unlock;
+		if (value > battmgr->oplus.charge_current_max) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+	}
+write_property:
+	ret = qcom_battmgr_request_property(battmgr, opcode, property, value);
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	if (!ret) {
+		power_supply_changed(battmgr->bat_psy);
+		power_supply_changed(battmgr->usb_psy);
+	}
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+
+static int qcom_battmgr_oplus_fcc_set(void *data, u64 value)
+{
+	if (value < 100000 || value > 2000000 || value % 50000)
+		return -EINVAL;
+	return qcom_battmgr_oplus_charger_test_set(data, BATTMGR_BAT_PROPERTY_SET,
+						 BATT_CHG_CTRL_LIM, value);
+}
+DEFINE_DEBUGFS_ATTRIBUTE(qcom_battmgr_oplus_fcc_fops, NULL, qcom_battmgr_oplus_fcc_set,
+			 "%llu\n");
+
+static int qcom_battmgr_oplus_icl_set(void *data, u64 value)
+{
+	if (value < 100000 || value > 2000000 || value % 50000)
+		return -EINVAL;
+	return qcom_battmgr_oplus_charger_test_set(data, BATTMGR_USB_PROPERTY_SET,
+						 USB_INPUT_CURR_LIMIT, value);
+}
+DEFINE_DEBUGFS_ATTRIBUTE(qcom_battmgr_oplus_icl_fops, NULL, qcom_battmgr_oplus_icl_set,
+			 "%llu\n");
+
+static int qcom_battmgr_oplus_fixed_voltage_set(void *data, u64 value)
+{
+	if (value != 5000 && value != 9000)
+		return -EINVAL;
+	return qcom_battmgr_oplus_charger_test_set(data, BATTMGR_BAT_PROPERTY_SET,
+						 OPLUS_BATT_SET_PDO, value);
+}
+DEFINE_DEBUGFS_ATTRIBUTE(qcom_battmgr_oplus_fixed_voltage_fops, NULL,
+			 qcom_battmgr_oplus_fixed_voltage_set, "%llu\n");
+
+/* Supervised BYPASS bring-up: never arm automatically or change float voltage. */
+static int qcom_battmgr_oplus_direct_mos(struct qcom_battmgr *battmgr, bool enable)
+{
+	int ret;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    OPLUS_USB_PPS_MOS_CTRL, enable);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	battmgr->oplus.mos_state = U32_MAX;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    OPLUS_USB_PPS_MOS_CTRL, 0);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	/* Firmware returns 2 when enabled; downstream treats this as a bool. */
+	return !!battmgr->oplus.mos_state == enable ? 0 : -EIO;
+}
+
+static int qcom_battmgr_oplus_direct_pps(struct qcom_battmgr *battmgr,
+					 u32 voltage_mv, u32 current_ma)
+{
+	int ret;
+
+	if (voltage_mv < 5000 || voltage_mv > OPLUS_DIRECT_MAX_VOLT_MV || voltage_mv % 20 ||
+	    current_ma < 500 || current_ma > OPLUS_DIRECT_MAX_CURR_MA ||
+	    current_ma % 50 ||
+	    !qcom_battmgr_oplus_pps_supported(battmgr, voltage_mv, current_ma))
+		return -EINVAL;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    OPLUS_USB_SET_PPS_VOLT, voltage_mv);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    OPLUS_USB_SET_PPS_CURR, current_ma);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	battmgr->oplus.pps_voltage_mv = voltage_mv;
+	battmgr->oplus.pps_current_ma = current_ma;
+	return 0;
+}
+
+/* All telemetry is refreshed under the same lock as the firmware requests. */
+static int qcom_battmgr_oplus_direct_sample(struct qcom_battmgr *battmgr,
+					    u32 *target_current)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	u32 *data = oplus->oem_data;
+	int temp, battery_current, min_cell_mv, ret, i, hottest = INT_MIN;
+	u32 cell_mv;
+
+	if (!READ_ONCE(battmgr->service_up) || READ_ONCE(oplus->otg_state))
+		return -ENOTCONN;
+	ret = qcom_battmgr_oplus_pps_caps(battmgr);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	if (battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD_PPS)
+		return -EOPNOTSUPP;
+	ret = qcom_battmgr_oplus_oem_read(battmgr);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	ret = qcom_battmgr_oplus_read_temperatures(battmgr, oplus->direct_temperatures);
+	if (ret)
+		return ret;
+
+	temp = (s32)data[0];
+	battery_current = (s32)data[1];
+	cell_mv = data[2] / 1000;
+	min_cell_mv = data[13];
+	if (temp < 120 || temp >= 400 || cell_mv < 3000 ||
+	    cell_mv >= OPLUS_DIRECT_MAX_CELL_MV || min_cell_mv < 3000 ||
+	    min_cell_mv >= OPLUS_DIRECT_MAX_CELL_MV ||
+	    abs((int)cell_mv - min_cell_mv) > 100 || data[3] >= 7500 ||
+	    battery_current < -4000000 || battery_current > 1000000)
+		return -ERANGE;
+	for (i = 0; i < OPLUS_THERM_COUNT; i++) {
+		/* Missing or implausible sensors must not become a synthetic 25 C. */
+		if (oplus->direct_temperatures[i] < -10000 ||
+		    oplus->direct_temperatures[i] >= 60000)
+			return -ERANGE;
+		hottest = max(hottest, oplus->direct_temperatures[i]);
+	}
+
+	/* Stay below Waffle's downstream 4.42 V software-full threshold. */
+	if (cell_mv >= 4350)
+		oplus->direct_cell_current_ma = min(oplus->direct_cell_current_ma, 1000U);
+	else if (cell_mv >= 4250)
+		oplus->direct_cell_current_ma = min(oplus->direct_cell_current_ma, 2000U);
+	/* Do not undo voltage taper merely because reducing current lowers IR drop. */
+	*target_current = oplus->direct_cell_current_ma;
+	if (temp >= 380)
+		oplus->direct_thermal_derated = true;
+	else if (temp < 360)
+		oplus->direct_thermal_derated = false;
+	if (hottest >= 50000)
+		oplus->direct_connector_derated = true;
+	else if (hottest < 45000)
+		oplus->direct_connector_derated = false;
+	if (temp < 160 || temp >= 360)
+		*target_current = min(*target_current, 2000U);
+	if (oplus->direct_thermal_derated || oplus->direct_connector_derated)
+		*target_current = min(*target_current, 1000U);
+
+	if (oplus->direct_state == OPLUS_DIRECT_RUNNING) {
+		/* Downstream's ADSP fallback estimates a 0.35 ohm charging path. */
+		oplus->direct_target_mv = min(OPLUS_DIRECT_MAX_VOLT_MV,
+					      2 * cell_mv + *target_current * 35 / 100);
+	} else {
+		/* The 300 mV margin is only for approaching voltage with MOS open. */
+		oplus->direct_target_mv = (2 * cell_mv / 100) * 100 + 300;
+	}
+	if (!qcom_battmgr_oplus_pps_supported(battmgr, 5000, 1000) ||
+	    !qcom_battmgr_oplus_pps_supported(battmgr, oplus->direct_target_mv,
+					    *target_current))
+		return -EOPNOTSUPP;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_VOLT_NOW, 0);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	oplus->direct_input_mv = battmgr->usb.voltage_now / 1000;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_CURR_NOW, 0);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	oplus->direct_input_ma = battmgr->usb.current_now / 1000;
+	if (oplus->direct_input_mv < 3500 ||
+	    oplus->direct_input_mv > OPLUS_DIRECT_MAX_VOLT_MV ||
+	    oplus->direct_input_ma > 3300)
+		return -ERANGE;
+
+	oplus->mos_state = U32_MAX;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    OPLUS_USB_PPS_MOS_CTRL, 0);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	return 0;
+}
+
+static int qcom_battmgr_oplus_direct_exit(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	int ret;
+
+	if (!READ_ONCE(battmgr->service_up))
+		return -ENOTCONN;
+	/* Never resume the buck path until MOS-off has been read back. */
+	ret = qcom_battmgr_oplus_direct_mos(battmgr, false);
+	if (ret) {
+		/* Reduce the PPS limit even if MOS-off cannot yet be confirmed. */
+		qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					      OPLUS_USB_SET_PPS_CURR, 500);
+		return ret;
+	}
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+					    BATT_CHG_CTRL_LIM, 500000);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	/* Firmware uses a sentinel to clear input suspend before setting an ICL. */
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    USB_INPUT_CURR_LIMIT, U32_MAX);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+					    USB_INPUT_CURR_LIMIT, 500000);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	ret = qcom_battmgr_oplus_pps_caps(battmgr);
+	if (!ret && battmgr->usb.usb_type == POWER_SUPPLY_USB_TYPE_PD_PPS) {
+		ret = qcom_battmgr_oplus_direct_pps(battmgr, 5000, 500);
+		if (ret)
+			return ret;
+	} else if (!ret) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    OPLUS_BATT_SET_PDO, 5000);
+		if (ret)
+			return ret > 0 ? -EREMOTEIO : ret;
+	} else if (ret != -ENODATA && ret != -EOPNOTSUPP) {
+		return ret;
+	}
+	ret = qcom_battmgr_oplus_oem_read(battmgr);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+					    USB_VOLT_NOW, 0);
+	if (ret)
+		return ret > 0 ? -EREMOTEIO : ret;
+	if (battmgr->usb.voltage_now >= 3500000 && oplus->oem_data[9])
+		return -EAGAIN;
+	oplus->direct_state = OPLUS_DIRECT_IDLE;
+	__pm_relax(battmgr->oplus_direct_ws);
+	if (READ_ONCE(oplus->otg_state))
+		schedule_work(&battmgr->oplus_otg_work);
+	return 0;
+}
+
+static void qcom_battmgr_oplus_direct_worker(struct work_struct *work)
+{
+	struct qcom_battmgr *battmgr = container_of(to_delayed_work(work),
+					struct qcom_battmgr, oplus_direct_work);
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	u32 target_current, voltage, request_current;
+	u32 pack_mv;
+	int ret, charge_ma;
+
+	mutex_lock(&battmgr->lock);
+	if (oplus->direct_state == OPLUS_DIRECT_IDLE)
+		goto out_unlock;
+	if (oplus->direct_state == OPLUS_DIRECT_STOPPING)
+		goto stop;
+	if (READ_ONCE(oplus->direct_abort) ||
+	    time_after_eq(jiffies, oplus->direct_deadline)) {
+		oplus->direct_error = -ECANCELED;
+		oplus->direct_state = OPLUS_DIRECT_STOPPING;
+	}
+	if (oplus->direct_state == OPLUS_DIRECT_STOPPING)
+		goto stop;
+
+	ret = qcom_battmgr_oplus_direct_sample(battmgr, &target_current);
+	if (ret)
+		goto fault;
+	if (READ_ONCE(oplus->direct_abort) ||
+	    time_after_eq(jiffies, oplus->direct_deadline)) {
+		ret = -ECANCELED;
+		goto fault;
+	}
+	voltage = oplus->direct_target_mv;
+	if (oplus->direct_state == OPLUS_DIRECT_PRECHARGE) {
+		/* Downstream checks MOS status after 500 ms, not in the set reply. */
+		if (oplus->direct_mos_pending) {
+			if (oplus->mos_state) {
+				oplus->direct_mos_pending = false;
+				oplus->direct_state = OPLUS_DIRECT_RUNNING;
+				dev_info(battmgr->dev,
+					 "PPS BYPASS enabled at %u mV / 1000 mA (MOS status %u)\n",
+					 oplus->direct_input_mv, oplus->mos_state);
+				goto reschedule;
+			}
+			if (time_after_eq(jiffies, oplus->direct_mos_deadline)) {
+				ret = -ETIMEDOUT;
+				goto fault;
+			}
+			goto reschedule;
+		}
+		if (oplus->mos_state != 0 ||
+		    time_after_eq(jiffies, oplus->direct_start_deadline)) {
+			ret = -ETIMEDOUT;
+			goto fault;
+		}
+		/* Approach pack voltage with MOS open before enabling BYPASS. */
+		if (oplus->direct_input_mv < voltage) {
+			voltage = min(voltage + 200, oplus->pps_voltage_mv + 200);
+			if (voltage == oplus->pps_voltage_mv) {
+				ret = -ERANGE;
+				goto fault;
+			}
+		} else if (oplus->direct_input_mv > voltage + 200) {
+			voltage = max(5000U, oplus->pps_voltage_mv - 100);
+		} else {
+			if (oplus->oem_data[9] != 1 || (s32)oplus->oem_data[1] < -100000) {
+				ret = -EIO;
+				goto fault;
+			}
+			ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+							    OPLUS_USB_PPS_MOS_CTRL, 1);
+			if (ret) {
+				ret = ret > 0 ? -EREMOTEIO : ret;
+				goto fault;
+			}
+			oplus->direct_mos_pending = true;
+			oplus->direct_mos_deadline = jiffies + 3 * HZ;
+			dev_info(battmgr->dev, "PPS BYPASS MOS-on requested at %u mV\n",
+				 oplus->direct_input_mv);
+			goto reschedule;
+		}
+		ret = qcom_battmgr_oplus_direct_pps(battmgr, voltage, 1000);
+		if (ret)
+			goto fault;
+		goto reschedule;
+	}
+
+	pack_mv = oplus->oem_data[2] / 1000 + oplus->oem_data[13];
+	/* Loaded VIN follows pack voltage; it no longer needs the startup margin. */
+	if (!oplus->mos_state || oplus->direct_input_mv + 300 < pack_mv ||
+	    oplus->direct_input_mv > pack_mv + 500) {
+		ret = -EIO;
+		goto fault;
+	}
+	/* ADSP has no CP IIN getter: downstream uses fresh gauge current instead. */
+	charge_ma = -(s32)oplus->oem_data[1] / 1000;
+	if (charge_ma < 100) {
+		if (++oplus->direct_low_current_count >= 4) {
+			ret = -EIO;
+			goto fault;
+		}
+	} else {
+		oplus->direct_low_current_count = 0;
+	}
+	request_current = min(target_current, oplus->pps_current_ma + 250);
+	if (charge_ma > (int)target_current + 500) {
+		if (++oplus->direct_high_current_count >= 4) {
+			ret = -ERANGE;
+			goto fault;
+		}
+		voltage = max(5000U, oplus->pps_voltage_mv - 100);
+	} else {
+		oplus->direct_high_current_count = 0;
+		if (charge_ma > (int)target_current + 200)
+			voltage = max(5000U, oplus->pps_voltage_mv - 40);
+		else if (request_current != target_current ||
+			 charge_ma >= (int)target_current - 200)
+			voltage = oplus->pps_voltage_mv;
+		else if (oplus->pps_voltage_mv + 80 < voltage)
+			voltage = min(OPLUS_DIRECT_MAX_VOLT_MV, oplus->pps_voltage_mv + 40);
+		else if (oplus->pps_voltage_mv > voltage + 80)
+			voltage = max(5000U, oplus->pps_voltage_mv - 40);
+		else
+			voltage = oplus->pps_voltage_mv;
+	}
+	/* Mirror the ADSP downstream watchdog-reset operation while MOS is on. */
+	ret = qcom_battmgr_oplus_direct_mos(battmgr, true);
+	if (ret)
+		goto fault;
+	ret = qcom_battmgr_oplus_direct_pps(battmgr, voltage, request_current);
+	if (ret)
+		goto fault;
+	goto reschedule;
+
+fault:
+	oplus->direct_error = ret;
+	oplus->direct_state = OPLUS_DIRECT_STOPPING;
+	dev_warn(battmgr->dev, "PPS BYPASS stopping: %d\n", ret);
+stop:
+	ret = qcom_battmgr_oplus_direct_exit(battmgr);
+	if (ret)
+		dev_warn_ratelimited(battmgr->dev, "PPS BYPASS exit pending: %d\n", ret);
+reschedule:
+	if (oplus->direct_state != OPLUS_DIRECT_IDLE && !READ_ONCE(oplus->direct_shutdown))
+		schedule_delayed_work(&battmgr->oplus_direct_work, HZ);
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+}
+
+static int qcom_battmgr_oplus_direct_set(void *data, u64 command)
+{
+	struct qcom_battmgr *battmgr = data;
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	u32 target_current;
+	int ret = 0;
+
+	if (command > 2)
+		return -EINVAL;
+	mutex_lock(&battmgr->lock);
+	if (READ_ONCE(oplus->direct_shutdown)) {
+		ret = -ESHUTDOWN;
+		goto out_unlock;
+	}
+	if (!command) {
+		if (oplus->direct_state == OPLUS_DIRECT_IDLE)
+			goto out_unlock;
+		oplus->direct_state = OPLUS_DIRECT_STOPPING;
+		ret = qcom_battmgr_oplus_direct_exit(battmgr);
+		if (ret)
+			mod_delayed_work(system_percpu_wq, &battmgr->oplus_direct_work, HZ);
+		goto out_unlock;
+	}
+	if (command == 2) {
+		if (oplus->direct_state != OPLUS_DIRECT_PRECHARGE &&
+		    oplus->direct_state != OPLUS_DIRECT_RUNNING) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		/* An expired session cannot be resurrected by a late heartbeat. */
+		if (READ_ONCE(oplus->direct_abort) ||
+		    time_after_eq(jiffies, oplus->direct_deadline)) {
+			ret = -ECANCELED;
+			mod_delayed_work(system_percpu_wq, &battmgr->oplus_direct_work, 0);
+			goto out_unlock;
+		}
+		oplus->direct_deadline = jiffies + OPLUS_DIRECT_LEASE;
+		goto out_unlock;
+	}
+	if (oplus->direct_state != OPLUS_DIRECT_IDLE) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	oplus->direct_cell_current_ma = OPLUS_DIRECT_MAX_CURR_MA;
+	oplus->direct_thermal_derated = false;
+	oplus->direct_connector_derated = false;
+	ret = qcom_battmgr_oplus_direct_sample(battmgr, &target_current);
+	if (ret)
+		goto out_unlock;
+	if (oplus->mos_state != 0) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+	WRITE_ONCE(oplus->direct_abort, false);
+	oplus->direct_mos_pending = false;
+	oplus->direct_low_current_count = 0;
+	oplus->direct_high_current_count = 0;
+	oplus->direct_error = 0;
+	oplus->direct_state = OPLUS_DIRECT_PRECHARGE;
+	oplus->direct_deadline = jiffies + OPLUS_DIRECT_LEASE;
+	oplus->direct_start_deadline = jiffies + 30 * HZ;
+	__pm_stay_awake(battmgr->oplus_direct_ws);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+					    BATT_CHG_CTRL_LIM, 500000);
+	if (!ret)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
+						    USB_INPUT_CURR_LIMIT, 0);
+	if (!ret)
+		ret = qcom_battmgr_oplus_direct_pps(battmgr, 5000, 1000);
+	if (ret) {
+		oplus->direct_error = ret > 0 ? -EREMOTEIO : ret;
+		oplus->direct_state = OPLUS_DIRECT_STOPPING;
+		qcom_battmgr_oplus_direct_exit(battmgr);
+	}
+	mod_delayed_work(system_percpu_wq, &battmgr->oplus_direct_work, HZ);
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret > 0 ? -EREMOTEIO : ret;
+}
+DEFINE_DEBUGFS_ATTRIBUTE(qcom_battmgr_oplus_direct_control_fops, NULL,
+			 qcom_battmgr_oplus_direct_set, "%llu\n");
+
+static int qcom_battmgr_oplus_direct_show(struct seq_file *s, void *unused)
+{
+	struct qcom_battmgr *battmgr = s->private;
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+
+	mutex_lock(&battmgr->lock);
+	seq_printf(s, "state=%u error=%d target_voltage=%u mV request=%u mV/%u mA\n",
+		   oplus->direct_state, oplus->direct_error, oplus->direct_target_mv,
+		   oplus->pps_voltage_mv, oplus->pps_current_ma);
+	seq_printf(s, "input=%u mV/%u mA mos=%u temperature=%d/%d/%d mC\n",
+		   oplus->direct_input_mv, oplus->direct_input_ma, oplus->mos_state,
+		   oplus->direct_temperatures[0], oplus->direct_temperatures[1],
+		   oplus->direct_temperatures[2]);
+	mutex_unlock(&battmgr->lock);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_oplus_direct);
+
+static void qcom_battmgr_oplus_direct_shutdown(struct auxiliary_device *adev)
+{
+	struct qcom_battmgr *battmgr = dev_get_drvdata(&adev->dev);
+	int ret = 0, i;
+
+	WRITE_ONCE(battmgr->oplus.direct_shutdown, true);
+	WRITE_ONCE(battmgr->oplus.direct_abort, true);
+	cancel_delayed_work_sync(&battmgr->oplus_direct_work);
+	mutex_lock(&battmgr->lock);
+	if (battmgr->oplus.direct_state != OPLUS_DIRECT_IDLE) {
+		battmgr->oplus.direct_state = OPLUS_DIRECT_STOPPING;
+		for (i = 0; i < 3; i++) {
+			ret = qcom_battmgr_oplus_direct_exit(battmgr);
+			if (!ret)
+				break;
+		}
+		if (ret)
+			dev_err(battmgr->dev, "failed to stop PPS BYPASS at shutdown: %d\n", ret);
+	}
+	mutex_unlock(&battmgr->lock);
+}
+
+static void qcom_battmgr_oplus_direct_cleanup(void *data)
+{
+	struct qcom_battmgr *battmgr = data;
+
+	qcom_battmgr_oplus_direct_shutdown(to_auxiliary_dev(battmgr->dev));
+	wakeup_source_unregister(battmgr->oplus_direct_ws);
+}
+
+static int qcom_battmgr_oplus_suspend(struct auxiliary_device *adev, pm_message_t state)
+{
+	struct qcom_battmgr *battmgr = dev_get_drvdata(&adev->dev);
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+	ret = battmgr->oplus.direct_state == OPLUS_DIRECT_IDLE ? 0 : -EBUSY;
+	mutex_unlock(&battmgr->lock);
+	return ret;
+}
+
+static void qcom_battmgr_debugfs_remove(void *data)
+{
+	debugfs_remove_recursive(data);
 }
 
 static int qcom_battmgr_usb_get_property(struct power_supply *psy,
@@ -1144,6 +2158,8 @@ static const struct power_supply_desc sm8350_usb_psy_desc = {
 	.properties = sm8350_usb_props,
 	.num_properties = ARRAY_SIZE(sm8350_usb_props),
 	.get_property = qcom_battmgr_usb_get_property,
+	.set_property = qcom_battmgr_usb_set_property,
+	.property_is_writeable = qcom_battmgr_usb_property_is_writeable,
 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
 		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
 		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
@@ -1266,6 +2282,14 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	notification = le32_to_cpu(msg->notification);
 	notification &= 0xff;
 	if (battmgr->oplus_otg_control) {
+		if (notification == NOTIF_CP_MOS_DISABLE ||
+		    notification == NOTIF_PD_CONNECT_HARD_RESET ||
+		    notification == NOTIF_OPLUS_OTG_ENABLE) {
+			WRITE_ONCE(battmgr->oplus.direct_abort, true);
+			if (READ_ONCE(battmgr->oplus.direct_state) != OPLUS_DIRECT_IDLE &&
+			    !READ_ONCE(battmgr->oplus.direct_shutdown))
+				mod_delayed_work(system_percpu_wq, &battmgr->oplus_direct_work, 0);
+		}
 		switch (notification) {
 		case NOTIF_OPLUS_OTG_ENABLE:
 			WRITE_ONCE(battmgr->oplus.otg_state, true);
@@ -1296,6 +2320,7 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	case NOTIF_APSD_DONE:
 	case NOTIF_CP_MOS_DISABLE:
 	case NOTIF_POWER_ROLE_STATUS:
+	case NOTIF_PD_SOURCE_CAPS:
 	case NOTIF_PD_CONNECT_HARD_RESET:
 	case NOTIF_OPLUS_OTG_ENABLE:
 	case NOTIF_OPLUS_OTG_DISABLE:
@@ -1523,6 +2548,12 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		case BATT_CURR_NOW:
 			battmgr->status.current_now = le32_to_cpu(resp->intval.value);
 			break;
+		case BATT_CHG_CTRL_LIM:
+			battmgr->oplus.charge_current = le32_to_cpu(resp->intval.value);
+			break;
+		case BATT_CHG_CTRL_LIM_MAX:
+			battmgr->oplus.charge_current_max = le32_to_cpu(resp->intval.value);
+			break;
 		case BATT_TEMP:
 			val = le32_to_cpu(resp->intval.value);
 			battmgr->status.temperature = DIV_ROUND_CLOSEST(val, 10);
@@ -1585,6 +2616,11 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		switch (property) {
 		case USB_ONLINE:
 			battmgr->usb.online = le32_to_cpu(resp->intval.value);
+			if (!battmgr->usb.online &&
+			    battmgr->oplus.direct_state == OPLUS_DIRECT_IDLE) {
+				battmgr->oplus.pps_voltage_mv = 5000;
+				battmgr->oplus.pps_current_ma = 1000;
+			}
 			break;
 		case USB_VOLT_NOW:
 			battmgr->usb.voltage_now = le32_to_cpu(resp->intval.value);
@@ -1602,17 +2638,25 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			battmgr->usb.current_limit = le32_to_cpu(resp->intval.value);
 			break;
 		case USB_TYPE:
+		case USB_ADAP_TYPE:
 			battmgr->usb.usb_type = le32_to_cpu(resp->intval.value);
+			break;
+		case OPLUS_USB_GET_PPS_STATUS:
+			battmgr->oplus.pps_status = le32_to_cpu(resp->intval.value);
+			break;
+		case OPLUS_USB_PPS_MOS_CTRL:
+			battmgr->oplus.mos_state = le32_to_cpu(resp->intval.value);
 			break;
 		default:
 			dev_warn(battmgr->dev, "unknown property %#x\n", property);
 			break;
 		}
 		break;
+	case BATTMGR_BAT_PROPERTY_SET:
 	case BATTMGR_USB_PROPERTY_SET:
 		if (payload_len != sizeof(resp->intval)) {
 			dev_warn(battmgr->dev,
-				 "invalid payload length for USB property set: %zd\n",
+				 "invalid payload length for property set: %zd\n",
 				 payload_len);
 			battmgr->error = -ENODATA;
 			return;
@@ -1668,14 +2712,81 @@ out_complete:
 	complete(&battmgr->ack);
 }
 
+static void qcom_battmgr_oplus_buffer_callback(struct qcom_battmgr *battmgr,
+					       const struct qcom_battmgr_oplus_buffer_resp *resp,
+					       size_t len)
+{
+	u32 data_size;
+	int i, count;
+
+	if (len != sizeof(*resp)) {
+		battmgr->error = -EMSGSIZE;
+		goto out_complete;
+	}
+	data_size = le32_to_cpu(resp->data_size);
+	if (data_size < 3 * sizeof(__le32) || data_size > sizeof(resp->data) ||
+	    data_size % sizeof(__le32)) {
+		battmgr->error = -ENODATA;
+		goto out_complete;
+	}
+	if (le32_to_cpu(resp->hdr.opcode) == OPLUS_OEM_READ_BUFFER) {
+		if (data_size < 15 * sizeof(__le32)) {
+			battmgr->error = -ENODATA;
+			goto out_complete;
+		}
+		battmgr->oplus.oem_words = data_size / sizeof(__le32);
+		for (i = 0; i < battmgr->oplus.oem_words; i++)
+			battmgr->oplus.oem_data[i] = le32_to_cpu(resp->data[i]);
+		goto out_complete;
+	}
+
+	battmgr->oplus.pps_imax = le32_to_cpu(resp->data[0]);
+	battmgr->oplus.pps_vmax = le32_to_cpu(resp->data[1]);
+	count = min_t(unsigned int, data_size / sizeof(__le32) - 2, PDO_MAX_OBJECTS);
+	for (i = 0; i < count; i++)
+		battmgr->oplus.pps_pdos[i] = le32_to_cpu(resp->data[i + 2]);
+
+out_complete:
+	complete(&battmgr->ack);
+}
+
 static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
 {
 	const struct pmic_glink_hdr *hdr = data;
 	struct qcom_battmgr *battmgr = priv;
-	unsigned int opcode = le32_to_cpu(hdr->opcode);
+	unsigned int opcode;
 
-	if (opcode == BATTMGR_NOTIFICATION)
+	if (len < sizeof(*hdr))
+		return;
+	opcode = le32_to_cpu(hdr->opcode);
+
+	if (opcode == BATTMGR_NOTIFICATION) {
 		qcom_battmgr_notification(battmgr, data, len);
+		return;
+	}
+	/* A late, unrelated reply must not acknowledge a safety-critical write. */
+	if (battmgr->oplus_otg_control) {
+		/* Pair with the publication in qcom_battmgr_request(). */
+		if (!smp_load_acquire(&battmgr->request_pending) ||
+		    opcode != battmgr->request_opcode)
+			return;
+		if (battmgr->request_has_property) {
+			const struct qcom_battmgr_message *resp = data;
+
+			if (len < sizeof(*hdr) + sizeof(__le32))
+				return;
+			if (le32_to_cpu(resp->intval.property) != battmgr->request_property) {
+				dev_warn_ratelimited(battmgr->dev,
+						     "reply %#x property %u, expected %u\n", opcode,
+						     le32_to_cpu(resp->intval.property),
+						     battmgr->request_property);
+				return;
+			}
+		}
+	}
+	if ((opcode == OPLUS_PPS_READ_BUFFER || opcode == OPLUS_OEM_READ_BUFFER) &&
+	    battmgr->oplus_otg_control)
+		qcom_battmgr_oplus_buffer_callback(battmgr, data, len);
 	else if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 		 battmgr->variant == QCOM_BATTMGR_X1E80100)
 		qcom_battmgr_sc8280xp_callback(battmgr, data, len);
@@ -1693,7 +2804,9 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	};
 	int ret;
 
+	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
+	mutex_unlock(&battmgr->lock);
 	if (ret)
 		dev_err(battmgr->dev, "failed to request power notifications\n");
 
@@ -1719,6 +2832,10 @@ static void qcom_battmgr_oplus_otg_worker(struct work_struct *work)
 		return;
 
 	mutex_lock(&battmgr->lock);
+	if (enable && battmgr->oplus.direct_state != OPLUS_DIRECT_IDLE) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
 	if (enable) {
 		ret = qcom_battmgr_request_property(battmgr,
 						    BATTMGR_USB_PROPERTY_SET,
@@ -1752,6 +2869,11 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 	} else {
 		battmgr->service_up = false;
 		WRITE_ONCE(battmgr->oplus.otg_state, false);
+		WRITE_ONCE(battmgr->oplus.direct_abort, true);
+		if (battmgr->oplus_otg_control &&
+		    READ_ONCE(battmgr->oplus.direct_state) != OPLUS_DIRECT_IDLE &&
+		    !READ_ONCE(battmgr->oplus.direct_shutdown))
+			mod_delayed_work(system_percpu_wq, &battmgr->oplus_direct_work, 0);
 	}
 }
 
@@ -1776,17 +2898,24 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	struct power_supply_config psy_cfg = {};
 	const struct of_device_id *match;
 	struct qcom_battmgr *battmgr;
+	struct dentry *debugfs_dir;
 	struct device *dev = &adev->dev;
-	int ret;
+	int ret, i;
 
 	battmgr = devm_kzalloc(dev, sizeof(*battmgr), GFP_KERNEL);
 	if (!battmgr)
 		return -ENOMEM;
 
 	battmgr->dev = dev;
+	dev_set_drvdata(dev, battmgr);
+	INIT_DELAYED_WORK(&battmgr->oplus_direct_work, qcom_battmgr_oplus_direct_worker);
 	battmgr->status_follows_power_online =
 		of_device_is_compatible(dev->of_node, "oneplus,waffle-pmic-glink");
 	battmgr->oplus_otg_control = battmgr->status_follows_power_online;
+	/* OnePlus reports the negotiated adapter type separately from USB_TYPE. */
+	battmgr->usb_type_property = battmgr->oplus_otg_control ? USB_ADAP_TYPE : USB_TYPE;
+	battmgr->oplus.pps_voltage_mv = 5000;
+	battmgr->oplus.pps_current_ma = 1000;
 
 	psy_cfg.drv_data = battmgr;
 	psy_cfg.fwnode = dev_fwnode(&adev->dev);
@@ -1798,6 +2927,19 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 
 	mutex_init(&battmgr->lock);
 	init_completion(&battmgr->ack);
+	if (battmgr->oplus_otg_control && device_property_present(dev, "io-channels")) {
+		if (!IS_REACHABLE(CONFIG_IIO))
+			return dev_err_probe(dev, -EOPNOTSUPP,
+					     "charging thermistors require IIO\n");
+		for (i = 0; i < OPLUS_THERM_COUNT; i++) {
+			battmgr->oplus.thermistors[i] =
+				devm_iio_channel_get(dev, qcom_battmgr_oplus_thermistor_names[i]);
+			if (IS_ERR(battmgr->oplus.thermistors[i]))
+				return dev_err_probe(dev, PTR_ERR(battmgr->oplus.thermistors[i]),
+						     "failed to get %s thermistor\n",
+						     qcom_battmgr_oplus_thermistor_names[i]);
+		}
+	}
 
 	match = of_match_device(qcom_battmgr_of_variants, dev->parent);
 	if (match)
@@ -1837,7 +2979,8 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 			return dev_err_probe(dev, PTR_ERR(battmgr->wls_psy),
 					     "failed to register wireless charing power supply\n");
 	} else {
-		if (battmgr->variant == QCOM_BATTMGR_SM8550)
+		/* The OnePlus firmware uses properties 25/26 for PD/QC requests. */
+		if (battmgr->variant == QCOM_BATTMGR_SM8550 && !battmgr->oplus_otg_control)
 			psy_desc = &sm8550_bat_psy_desc;
 		else
 			psy_desc = &sm8350_bat_psy_desc;
@@ -1877,6 +3020,37 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 
 	pmic_glink_client_register(battmgr->client);
 
+	if (battmgr->oplus_otg_control) {
+		battmgr->oplus_direct_ws = wakeup_source_register(dev, "waffle-pps-bypass");
+		if (!battmgr->oplus_direct_ws)
+			return -ENOMEM;
+		ret = devm_add_action_or_reset(dev, qcom_battmgr_oplus_direct_cleanup, battmgr);
+		if (ret)
+			return ret;
+		debugfs_dir = debugfs_create_dir("qcom-battmgr", NULL);
+		debugfs_create_file("pps", 0400, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_pps_fops);
+		debugfs_create_file("charger", 0400, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_charger_fops);
+		debugfs_create_file("thermal", 0400, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_thermal_fops);
+		debugfs_create_file("mos_state", 0400, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_mos_fops);
+		debugfs_create_file("direct_charge", 0200, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_direct_control_fops);
+		debugfs_create_file("direct_state", 0400, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_direct_fops);
+		debugfs_create_file("charge_current_uA", 0200, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_fcc_fops);
+		debugfs_create_file("input_current_limit_uA", 0200, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_icl_fops);
+		debugfs_create_file("fixed_voltage_mV", 0200, debugfs_dir, battmgr,
+				    &qcom_battmgr_oplus_fixed_voltage_fops);
+		ret = devm_add_action_or_reset(dev, qcom_battmgr_debugfs_remove, debugfs_dir);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }
 
@@ -1889,6 +3063,8 @@ MODULE_DEVICE_TABLE(auxiliary, qcom_battmgr_id_table);
 static struct auxiliary_driver qcom_battmgr_driver = {
 	.name = "pmic_glink_power_supply",
 	.probe = qcom_battmgr_probe,
+	.shutdown = qcom_battmgr_oplus_direct_shutdown,
+	.suspend = qcom_battmgr_oplus_suspend,
 	.id_table = qcom_battmgr_id_table,
 };
 
@@ -1896,3 +3072,4 @@ module_auxiliary_driver(qcom_battmgr_driver);
 
 MODULE_DESCRIPTION("Qualcomm PMIC GLINK battery manager driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_CONSUMER");
