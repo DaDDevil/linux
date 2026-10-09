@@ -127,6 +127,7 @@ static int ir_spi_set_duty_cycle(struct rc_dev *dev, u32 duty_cycle)
 static int ir_spi_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
+	const char *supply = "power";
 	int ret;
 	u8 dc;
 	struct ir_spi_data *idata;
@@ -135,7 +136,12 @@ static int ir_spi_probe(struct spi_device *spi)
 	if (!idata)
 		return -ENOMEM;
 
-	idata->regulator = devm_regulator_get(dev, "irda_regulator");
+	/* Preserve the supply name accepted by older versions of the driver. */
+	if (!device_property_present(dev, "power-supply") &&
+	    device_property_present(dev, "irda_regulator-supply"))
+		supply = "irda_regulator";
+
+	idata->regulator = devm_regulator_get(dev, supply);
 	if (IS_ERR(idata->regulator))
 		return PTR_ERR(idata->regulator);
 

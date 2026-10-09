@@ -40,9 +40,11 @@ properties:
       - const: vfe_lite1
 
   clocks:
-    maxItems: 33
+    minItems: 33
+    maxItems: 34
 
   clock-names:
+    minItems: 33
     items:
       - const: camnoc_axi
       - const: cpas_ahb
@@ -77,6 +79,7 @@ properties:
       - const: vfe_lite_ahb
       - const: vfe_lite_cphy_rx
       - const: vfe_lite_csid
+      - const: camnoc_nrt_axi
 
   interrupts:
     maxItems: 16
@@ -276,7 +279,8 @@ examples:
                      <&camcc CAM_CC_IFE_LITE_CLK>,
                      <&camcc CAM_CC_IFE_LITE_AHB_CLK>,
                      <&camcc CAM_CC_IFE_LITE_CPHY_RX_CLK>,
-                     <&camcc CAM_CC_IFE_LITE_CSID_CLK>;
+                     <&camcc CAM_CC_IFE_LITE_CSID_CLK>,
+                     <&camcc CAM_CC_CAMNOC_AXI_NRT_CLK>;
             clock-names = "camnoc_axi",
                           "cpas_ahb",
                           "cpas_fast_ahb",
@@ -309,7 +313,8 @@ examples:
                           "vfe_lite",
                           "vfe_lite_ahb",
                           "vfe_lite_cphy_rx",
-                          "vfe_lite_csid";
+                          "vfe_lite_csid",
+                          "camnoc_nrt_axi";
             interrupts = <GIC_SPI 601 IRQ_TYPE_EDGE_RISING>,
                          <GIC_SPI 603 IRQ_TYPE_EDGE_RISING>,
                          <GIC_SPI 431 IRQ_TYPE_EDGE_RISING>,

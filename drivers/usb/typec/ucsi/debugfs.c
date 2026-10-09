@@ -72,6 +72,11 @@ static int ucsi_cmd(void *data, u64 val)
 		return ret;
 	}
 
+	/* MESSAGE_IN may still contain bytes from the preceding command. */
+	if (ret < sizeof(ucsi->debugfs->response))
+		memset((u8 *)&ucsi->debugfs->response + ret, 0,
+		       sizeof(ucsi->debugfs->response) - ret);
+
 	return 0;
 }
 DEFINE_DEBUGFS_ATTRIBUTE(ucsi_cmd_fops, NULL, ucsi_cmd, "0x%llx\n");
