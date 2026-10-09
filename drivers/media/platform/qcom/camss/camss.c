@@ -3516,7 +3516,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 		.regulators = { },
 		.clock = { "gcc_axi_hf", "cpas_ahb", "cpas_fast_ahb",
 			   "camnoc_axi", "vfe0_fast_ahb", "vfe0", "cpas_vfe0",
-			   "qdss_debug_xo",
+			   "qdss_debug_xo", "camnoc_nrt_axi",
 		},
 		.clock_rate = {	{ 0 },
 				{ 80000000 },
@@ -3524,6 +3524,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 				{ 300000000, 400000000 },
 				{ 0 },
 				{ 466000000, 594000000, 675000000, 785000000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 		},
@@ -3543,7 +3544,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 		.regulators = { },
 		.clock = { "gcc_axi_hf", "cpas_ahb", "cpas_fast_ahb",
 			   "camnoc_axi", "vfe1_fast_ahb", "vfe1", "cpas_vfe1",
-			   "qdss_debug_xo",
+			   "qdss_debug_xo", "camnoc_nrt_axi",
 		},
 		.clock_rate = {	{ 0 },
 				{ 80000000 },
@@ -3551,6 +3552,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 				{ 300000000, 400000000 },
 				{ 0 },
 				{ 466000000, 594000000, 675000000, 785000000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 		},
@@ -3570,7 +3572,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 		.regulators = { },
 		.clock = { "gcc_axi_hf", "cpas_ahb", "cpas_fast_ahb",
 			   "camnoc_axi", "vfe2_fast_ahb", "vfe2", "cpas_vfe2",
-			   "qdss_debug_xo",
+			   "qdss_debug_xo", "camnoc_nrt_axi",
 		},
 		.clock_rate = { { 0 },
 				{ 80000000 },
@@ -3578,6 +3580,7 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 				{ 300000000, 400000000 },
 				{ 0 },
 				{ 466000000, 594000000, 675000000, 785000000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 		},
@@ -3597,13 +3600,14 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 		.regulators = { },
 		.clock = { "gcc_axi_hf", "cpas_ahb", "camnoc_axi",
 			   "vfe_lite_ahb", "vfe_lite", "cpas_vfe_lite",
-			   "qdss_debug_xo",
+			   "qdss_debug_xo", "camnoc_nrt_axi",
 		},
 		.clock_rate = { { 0 },
 				{ 80000000 },
 				{ 300000000, 400000000 },
 				{ 0 },
 				{ 400000000, 480000000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 		},
@@ -3622,13 +3626,14 @@ static const struct camss_subdev_resources vfe_res_sm8650[] = {
 		.regulators = { },
 		.clock = { "gcc_axi_hf", "cpas_ahb", "camnoc_axi",
 			   "vfe_lite_ahb", "vfe_lite", "cpas_vfe_lite",
-			   "qdss_debug_xo",
+			   "qdss_debug_xo", "camnoc_nrt_axi",
 		},
 		.clock_rate = {	{ 0 },
 				{ 80000000 },
 				{ 300000000, 400000000 },
 				{ 0 },
 				{ 400000000, 480000000 },
+				{ 0 },
 				{ 0 },
 				{ 0 },
 		},
@@ -4734,16 +4739,17 @@ static const struct parent_dev_ops vfe_parent_dev_ops = {
 
 /*
  * camss_parse_endpoint_node - Parse port endpoint node
- * @dev: CAMSS device
+ * @camss: CAMSS instance
  * @ep: Device endpoint to be parsed
  * @csd: Parsed data from port endpoint node
  *
  * Return 0 on success or a negative error code on failure
  */
-static int camss_parse_endpoint_node(struct device *dev,
+static int camss_parse_endpoint_node(struct camss *camss,
 				     struct fwnode_handle *ep,
 				     struct camss_async_subdev *csd)
 {
+	struct device *dev = camss->dev;
 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
@@ -4754,11 +4760,9 @@ static int camss_parse_endpoint_node(struct device *dev,
 	if (ret)
 		return ret;
 
-	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
-	 */
-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
+	lncfg->is_cphy = vep.bus_type == V4L2_MBUS_CSI2_CPHY;
+	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY &&
+	    !(lncfg->is_cphy && camss->res->version == CAMSS_8650)) {
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
@@ -4769,6 +4773,8 @@ static int camss_parse_endpoint_node(struct device *dev,
 	lncfg->clk.pos = mipi_csi2->clock_lane;
 	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
 	lncfg->num_data = mipi_csi2->num_data_lanes;
+	if (lncfg->is_cphy && lncfg->num_data != 3)
+		return -EINVAL;
 
 	lncfg->data = devm_kcalloc(dev,
 				   lncfg->num_data, sizeof(*lncfg->data),
@@ -4806,7 +4812,7 @@ static int camss_parse_ports(struct camss *camss)
 			goto err_cleanup;
 		}
 
-		ret = camss_parse_endpoint_node(dev, ep, csd);
+		ret = camss_parse_endpoint_node(camss, ep, csd);
 		if (ret < 0)
 			goto err_cleanup;
 	}

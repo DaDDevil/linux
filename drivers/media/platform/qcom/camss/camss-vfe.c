@@ -1871,7 +1871,12 @@ int msm_vfe_subdev_init(struct camss *camss, struct vfe_device *vfe,
 	for (i = 0; i < vfe->nclocks; i++) {
 		struct camss_clock *clock = &vfe->clock[i];
 
-		clock->clk = devm_clk_get(dev, res->clock[i]);
+		/* The NRT clock was absent from the original SM8650 binding. */
+		if (camss->res->version == CAMSS_8650 &&
+		    !strcmp(res->clock[i], "camnoc_nrt_axi"))
+			clock->clk = devm_clk_get_optional(dev, res->clock[i]);
+		else
+			clock->clk = devm_clk_get(dev, res->clock[i]);
 		if (IS_ERR(clock->clk))
 			return PTR_ERR(clock->clk);
 
