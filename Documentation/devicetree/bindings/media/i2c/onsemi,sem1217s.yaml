@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/onsemi,sem1217s.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+title: onsemi SEM1217S lens focus controller
+maintainers:
+  - DaDDevil <hexiaoshan520@gmail.com>
+description: |
+  SEM1217S controls a voice-coil focus actuator and optical stabilization.
+  The focus interface is controlled over I2C.
+properties:
+  compatible:
+    const: onsemi,sem1217s
+  reg:
+    maxItems: 1
+  vio-supply:
+    description: I/O supply
+  vdd-supply:
+    description: Controller supply
+  vaf-supply:
+    description: Focus actuator supply
+required:
+  - compatible
+  - reg
+  - vio-supply
+  - vdd-supply
+  - vaf-supply
+additionalProperties: false
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        lens@61 {
+            compatible = "onsemi,sem1217s";
+            reg = <0x61>;
+            vio-supply = <&vreg_1p8>;
+            vdd-supply = <&vreg_2p8>;
+            vaf-supply = <&vreg_af_2p8>;
+        };
+    };
