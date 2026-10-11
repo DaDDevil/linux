@@ -1287,7 +1287,7 @@
 
 		vdd-l1-l2-supply = <&vreg_s1c_1p2>;
 		vdd-l3-l4-supply = <&vreg_bob2>;
-		vdd-l5-supply = <&vreg_s6c_1p8>;
+		vdd-l5-supply = <&vreg_bob1>;
 		vdd-l6-supply = <&vreg_bob1>;
 		vdd-l7-supply = <&vreg_bob1>;
 
@@ -1531,8 +1531,16 @@
 &cci0_i2c0 {
 	clock-frequency = <400000>;
 
+	imx581_lens: lens@74 {
+		compatible = "asahi-kasei,ak7377";
+		reg = <0x74>;
+		vdd-supply = <&vreg_l7n_2p8>;
+		vio-supply = <&vreg_l3n_1p8>;
+	};
+
 	camera@1a {
 		compatible = "sony,imx581";
+		lens-focus = <&imx581_lens>;
 		reg = <0x1a>;
 
 		clocks = <&camcc CAM_CC_MCLK2_CLK>;
@@ -1569,8 +1577,16 @@
 &cci0_i2c1 {
 	clock-frequency = <400000>;
 
+	lyt808_lens: lens@c {
+		compatible = "asahi-kasei,ak7316";
+		reg = <0x0c>;
+		vdd-supply = <&vreg_l5m_3p0>;
+		vio-supply = <&vreg_l3n_1p8>;
+	};
+
 	camera@1a {
 		compatible = "sony,lyt808";
+		lens-focus = <&lyt808_lens>;
 		reg = <0x1a>;
 
 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
@@ -1613,8 +1629,17 @@
 &cci1_i2c0 {
 	clock-frequency = <400000>;
 
+	ov64b_lens: lens@61 {
+		compatible = "onsemi,sem1217s";
+		reg = <0x61>;
+		vio-supply = <&vreg_l3n_1p8>;
+		vdd-supply = <&vreg_l5n_2p8>;
+		vaf-supply = <&vreg_l7n_2p8>;
+	};
+
 	camera@10 {
 		compatible = "ovti,ov64b";
+		lens-focus = <&ov64b_lens>;
 		reg = <0x10>;
 
 		clocks = <&camcc CAM_CC_MCLK3_CLK>;
