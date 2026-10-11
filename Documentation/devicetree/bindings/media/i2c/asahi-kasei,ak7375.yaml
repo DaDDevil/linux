@@ -16,6 +16,8 @@ description:
 properties:
   compatible:
     enum:
+      - asahi-kasei,ak7316
+      - asahi-kasei,ak7377
       - asahi-kasei,ak7345
       - asahi-kasei,ak7375
 
