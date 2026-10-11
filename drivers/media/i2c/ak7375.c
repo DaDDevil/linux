@@ -36,6 +36,7 @@ struct ak73xx_chipdef {
 	 * I2C messages.
 	 */
 	u16 power_delay_us;
+	u16 park_position;
 };
 
 static const struct ak73xx_chipdef ak7345_cdef = {
@@ -63,6 +64,24 @@ static const struct ak73xx_chipdef ak7375_cdef = {
 	.ctrl_steps	= 64,
 	.ctrl_delay_us	= 1000,
 	.power_delay_us	= 10000,
+};
+
+/* AK7316 uses a 10-bit closed-loop position code and parks near the
+ * upper end of its travel. Factory PID settings remain in nonvolatile memory.
+ */
+static const struct ak73xx_chipdef ak7316_cdef = {
+	.reg_position = 0x0,
+	.reg_cont = 0x2,
+	.shift_pos = 6,
+	.mode_active = 0x0,
+	.mode_standby = 0x40,
+	.has_standby = true,
+	.focus_pos_max = 1023,
+	.focus_steps = 1,
+	.ctrl_steps = 32,
+	.ctrl_delay_us = 5000,
+	.power_delay_us = 12000,
+	.park_position = 1016,
 };
 
 static const char * const ak7375_supply_names[] = {
@@ -106,8 +125,10 @@ static int ak7375_i2c_write(struct ak7375_device *ak7375,
 	if (size == 2)
 		buf[1] = (data >> 8) & 0xff;
 	ret = i2c_master_send(client, (const char *)buf, size + 1);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&client->dev, "Register 0x%02x write failed: %d\n", addr, ret);
 		return ret;
+	}
 	if (ret != size + 1)
 		return -EIO;
 
@@ -165,7 +186,7 @@ static int ak7375_init_controls(struct ak7375_device *dev_vcm)
 	v4l2_ctrl_handler_init(hdl, 1);
 
 	dev_vcm->focus = v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FOCUS_ABSOLUTE,
-		0, cdef->focus_pos_max, cdef->focus_steps, 0);
+		0, cdef->focus_pos_max, cdef->focus_steps, cdef->park_position);
 
 	if (hdl->error)
 		dev_err(dev_vcm->sd.dev, "%s fail error: 0x%x\n",
@@ -254,14 +275,19 @@ static int __maybe_unused ak7375_vcm_suspend(struct device *dev)
 	if (!ak7375_dev->active)
 		return 0;
 
-	for (val = ak7375_dev->focus->val & ~(cdef->ctrl_steps - 1);
-	     val >= 0; val -= cdef->ctrl_steps) {
+	val = ak7375_dev->focus->val;
+	while (val != cdef->park_position) {
+		if (val < cdef->park_position)
+			val = min_t(int, val + cdef->ctrl_steps, cdef->park_position);
+		else
+			val = max_t(int, val - cdef->ctrl_steps, cdef->park_position);
 		ret = ak7375_i2c_write(ak7375_dev, cdef->reg_position,
 				       val << cdef->shift_pos, 2);
-		if (ret)
-			dev_err_once(dev, "%s I2C failure: %d\n",
-				     __func__, ret);
-		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 10);
+		if (ret) {
+			dev_err(dev, "Failed to park lens: %d\n", ret);
+			break;
+		}
+		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 100);
 	}
 
 	if (cdef->has_standby) {
@@ -299,36 +325,49 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(ak7375_supply_names),
 				    ak7375_dev->supplies);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "Failed to enable lens supplies: %d\n", ret);
 		return ret;
+	}
 
 	/* Wait for vcm to become ready */
 	usleep_range(cdef->power_delay_us, cdef->power_delay_us + 500);
 
 	ret = ak7375_i2c_write(ak7375_dev, cdef->reg_cont,
 			       cdef->mode_active, 1);
-	if (ret) {
-		dev_err(dev, "%s I2C failure: %d\n", __func__, ret);
-		return ret;
-	}
+	if (ret)
+		goto err_power;
+	usleep_range(3000, 3500);
+	ret = ak7375_i2c_write(ak7375_dev, cdef->reg_position,
+			       cdef->park_position << cdef->shift_pos, 2);
+	if (ret)
+		goto err_power;
 
-	for (val = ak7375_dev->focus->val % cdef->ctrl_steps;
-	     val <= ak7375_dev->focus->val;
-	     val += cdef->ctrl_steps) {
+	val = cdef->park_position;
+	while (val != ak7375_dev->focus->val) {
+		if (val < ak7375_dev->focus->val)
+			val = min_t(int, val + cdef->ctrl_steps, ak7375_dev->focus->val);
+		else
+			val = max_t(int, val - cdef->ctrl_steps, ak7375_dev->focus->val);
 		ret = ak7375_i2c_write(ak7375_dev, cdef->reg_position,
 				       val << cdef->shift_pos, 2);
 		if (ret)
-			dev_err_ratelimited(dev, "%s I2C failure: %d\n",
-						__func__, ret);
-		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 10);
+			goto err_power;
+		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 100);
 	}
 
 	ak7375_dev->active = true;
 
 	return 0;
+
+err_power:
+	regulator_bulk_disable(ARRAY_SIZE(ak7375_supply_names), ak7375_dev->supplies);
+	return ret;
 }
 
 static const struct of_device_id ak7375_of_table[] = {
+	{ .compatible = "asahi-kasei,ak7316", .data = &ak7316_cdef, },
+	{ .compatible = "asahi-kasei,ak7377", .data = &ak7375_cdef, },
 	{ .compatible = "asahi-kasei,ak7345", .data = &ak7345_cdef, },
 	{ .compatible = "asahi-kasei,ak7375", .data = &ak7375_cdef, },
 	{ /* sentinel */ }

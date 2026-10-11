@@ -948,6 +948,15 @@ config VIDEO_AD5820
 	  This is a driver for the AD5820 camera lens voice coil.
 	  It is used for example in Nokia N900 (RX-51).
 
+config VIDEO_SEM1217S
+	tristate "onsemi SEM1217S lens focus support"
+	depends on I2C && VIDEO_DEV
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	help
+	  V4L2 focus control for the SEM1217S lens controller.
+	  This driver does not manage optical image stabilization.
+
 config VIDEO_AK7375
 	tristate "AK7375 lens voice coil support"
 	help
