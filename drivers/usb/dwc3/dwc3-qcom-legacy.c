@@ -329,6 +329,10 @@ static enum usb_device_speed dwc3_qcom_read_usb2_speed(struct dwc3_qcom *qcom, i
 	hcd = platform_get_drvdata(dwc->xhci);
 
 #ifdef CONFIG_USB
+	/* The xHCI device can exist even if its driver failed to probe. */
+	if (!hcd || !hcd->self.root_hub)
+		return USB_SPEED_UNKNOWN;
+
 	udev = usb_hub_find_child(hcd->self.root_hub, port_index + 1);
 #else
 	udev = NULL;
