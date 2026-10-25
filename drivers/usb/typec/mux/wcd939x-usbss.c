@@ -252,14 +252,10 @@ static int wcd939x_usbss_set(struct wcd939x_usbss *usbss)
 		enable_usb = true;
 	} else if (usbss->svid) {
 		switch (usbss->mode) {
-		/* DP Only */
+		/* DP lane allocation does not affect the USB2 D+/D- path. */
 		case TYPEC_DP_STATE_C:
-		case TYPEC_DP_STATE_E:
-			enable_dp = true;
-			break;
-
-		/* DP + USB */
 		case TYPEC_DP_STATE_D:
+		case TYPEC_DP_STATE_E:
 		case TYPEC_DP_STATE_F:
 			enable_usb = true;
 			enable_dp = true;
